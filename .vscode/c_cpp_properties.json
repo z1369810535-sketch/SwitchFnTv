@@ -1,0 +1,108 @@
+{
+    "configurations": [
+        {
+            "name": "Switch",
+            "includePath": [
+                "${workspaceFolder}/build_switch/library/lunasvg/include",
+                "${workspaceFolder}/app/include",
+                "${workspaceFolder}/library/**",
+                "${env:DEVKITPRO}/libnx/include",
+                "${env:DEVKITPRO}/devkitA64/aarch64-none-elf/include",
+                "${env:DEVKITPRO}/portlibs/switch/include"
+            ],
+            "defines": [
+                "__SWITCH__",
+                "USE_WEBP",
+                "USE_LIBUSBHSFS",
+                "YG_ENABLE_EVENTS",
+                "BOREALIS_USE_OPENGL",
+                "BRLS_RESOURCES=\"resources\""
+            ],
+            "compilerPath": "${env:DEVKITPRO}/devkitA64/bin/aarch64-none-elf-g++",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-arm64"
+        },
+        {
+            "name": "PSVita",
+            "includePath": [
+                "${workspaceFolder}/app/include",
+                "${workspaceFolder}/library/**",
+                "${env:VITASDK}/include",
+                "${env:VITASDK}/arm-vita-eabi/include"
+            ],
+            "defines": [
+                "__PSV__",
+                "__SDL2__",
+                "USE_WEBP",
+                "YG_ENABLE_EVENTS",
+                "BOREALIS_USE_GXM",
+                "BRLS_RESOURCES=\"resources\""
+            ],
+            "compilerPath": "${env:VITASDK}/bin/arm-vita-eabi-g++",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-arm"
+        },
+        {
+            "name": "PS4",
+            "includePath": [
+                "${workspaceFolder}/app/include",
+                "${workspaceFolder}/library/**",
+                "/opt/pacbrew/ps4/openorbis/include/**",
+                "/opt/pacbrew/ps4/openorbis/usr/include"
+            ],
+            "defines": [
+                "__PS4__",
+                "PS4",
+                "USE_WEBP",
+                "YG_ENABLE_EVENTS",
+                "BOREALIS_USE_OPENGL",
+                "BRLS_RESOURCES=\"resources\""
+            ],
+            "compilerPath": "/opt/pacbrew/ps4/openorbis/bin/clang",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "clang-x64"
+        },
+        {
+            "name": "MinGW64",
+            "includePath": [
+                "${workspaceFolder}/build/library/lunasvg/include",
+                "${workspaceFolder}/app/include",
+                "${workspaceFolder}/library/**",
+                "C:/MinGW64/include",
+                "C:/MinGW64/x86_64-w64-mingw32/include/**"
+            ],
+            "defines": [
+                "USE_WEBP",
+                "USE_MUPDF",
+                "BOREALIS_USE_OPENGL",
+                "YG_ENABLE_EVENTS",
+                "BRLS_RESOURCES=\"resources\""
+            ],
+            "compilerPath": "C:/MinGW64/bin/gcc.exe",
+            "cStandard": "c17",
+            "cppStandard": "gnu++17",
+            "intelliSenseMode": "windows-gcc-x64"
+        },
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/app/include",
+                "${workspaceFolder}/library/**",
+                "/opt/switchfin/include"
+            ],
+            "defines": [
+                "BOREALIS_USE_OPENGL",
+                "YG_ENABLE_EVENTS",
+                "BRLS_RESOURCES=\"resources\""
+            ],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "cppStandard": "gnu++17",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}

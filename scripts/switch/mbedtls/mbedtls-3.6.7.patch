@@ -1,0 +1,109 @@
+diff --git a/include/mbedtls/mbedtls_config.h b/include/mbedtls/mbedtls_config.h
+index f684347519..d4364efdcd 100644
+--- a/include/mbedtls/mbedtls_config.h
++++ b/include/mbedtls/mbedtls_config.h
+@@ -540,7 +540,7 @@
+  *
+  * Uncomment to use your own hardware entropy collector.
+  */
+-//#define MBEDTLS_ENTROPY_HARDWARE_ALT
++#define MBEDTLS_ENTROPY_HARDWARE_ALT
+ 
+ /**
+  * \def MBEDTLS_AES_ROM_TABLES
+@@ -1220,7 +1220,7 @@
+  *
+  * Uncomment this macro to disable the built-in platform entropy functions.
+  */
+-//#define MBEDTLS_NO_PLATFORM_ENTROPY
++#define MBEDTLS_NO_PLATFORM_ENTROPY
+ 
+ /**
+  * \def MBEDTLS_ENTROPY_FORCE_SHA256
+@@ -1535,7 +1535,7 @@
+  *
+  * Enable the checkup functions (*_self_test).
+  */
+-#define MBEDTLS_SELF_TEST
++//#define MBEDTLS_SELF_TEST
+ 
+ /**
+  * \def MBEDTLS_SHA256_SMALLER
+diff --git a/library/common.h b/library/common.h
+index 1f59b32426..95db1ed4d9 100644
+--- a/library/common.h
++++ b/library/common.h
+@@ -40,6 +40,7 @@
+     (defined(__APPLE__) && defined(__MACH__)) ||                  \
+     defined(__HAIKU__) ||                                         \
+     defined(__midipix__) ||                                       \
++    defined(__SWITCH__) ||                                        \
+     /* Add other Unix-like platform indicators here ^^^^ */ 0
+ /* defined(MBEDTLS_PLATFORM_IS_UNIXLIKE) ==> we can include <unistd.h> */
+ #define MBEDTLS_PLATFORM_IS_UNIXLIKE
+diff --git a/library/entropy_poll.c b/library/entropy_poll.c
+index 1c8a29d6e2..c092872ced 100644
+--- a/library/entropy_poll.c
++++ b/library/entropy_poll.c
+@@ -31,7 +31,7 @@
+ 
+ #if !defined(unix) && !defined(__unix__) && !defined(__unix) && \
+     !defined(__APPLE__) && !defined(_WIN32) && !defined(__QNXNTO__) && \
+-    !defined(__HAIKU__) && !defined(__midipix__) && !defined(__MVS__)
++    !defined(__HAIKU__) && !defined(__midipix__) && !defined(__MVS__) && !defined(__SWITCH__)
+ #error \
+     "Platform entropy sources only work on Unix and Windows, see MBEDTLS_NO_PLATFORM_ENTROPY in mbedtls_config.h"
+ #endif
+@@ -205,6 +205,19 @@ int mbedtls_platform_entropy_poll(void *data,
+ #endif /* _WIN32 && !EFIX64 && !EFI32 */
+ #endif /* !MBEDTLS_NO_PLATFORM_ENTROPY */
+ 
++#ifdef __SWITCH__
++#include <switch.h>
++int mbedtls_hardware_poll( void *data,
++                            unsigned char *output, size_t len, size_t *olen )
++{
++    (void)(data);
++    csrngGetRandomBytes(output, len);
++    if(olen)
++        *olen = len;
++    return 0;
++}
++#endif
++
+ #if defined(MBEDTLS_ENTROPY_NV_SEED)
+ int mbedtls_nv_seed_poll(void *data,
+                          unsigned char *output, size_t len, size_t *olen)
+diff --git a/library/net_sockets.c b/library/net_sockets.c
+index c919f6f574..8a1986d977 100644
+--- a/library/net_sockets.c
++++ b/library/net_sockets.c
+@@ -404,6 +404,7 @@ int mbedtls_net_accept(mbedtls_net_context *bind_ctx,
+             }
+ 
+             memcpy(client_ip, &addr4->sin_addr.s_addr, *cip_len);
++#ifndef __SWITCH__
+         } else {
+             struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *) &client_addr;
+             *cip_len = sizeof(addr6->sin6_addr.s6_addr);
+@@ -413,6 +414,7 @@ int mbedtls_net_accept(mbedtls_net_context *bind_ctx,
+             }
+ 
+             memcpy(client_ip, &addr6->sin6_addr.s6_addr, *cip_len);
++#endif
+         }
+     }
+ 
+diff --git a/library/platform_util.c b/library/platform_util.c
+index 1cab42ffc0..12b4930993 100644
+--- a/library/platform_util.c
++++ b/library/platform_util.c
+@@ -219,7 +219,7 @@ void (*mbedtls_test_hook_test_fail)(const char *, int, const char *);
+ #include <unistd.h>
+ #endif
+ 
+-#if (defined(_POSIX_VERSION) && _POSIX_VERSION >= 199309L) || defined(__HAIKU__)
++#if (defined(_POSIX_VERSION) && _POSIX_VERSION >= 199309L) || defined(__HAIKU__) || defined(__SWITCH__)
+ mbedtls_ms_time_t mbedtls_ms_time(void)
+ {
+     int ret;
