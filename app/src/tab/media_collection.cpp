@@ -5,6 +5,7 @@
 #include "tab/media_collection.hpp"
 #include "api/jellyfin.hpp"
 #include "api/fntv.hpp"
+#include "utils/image.hpp"
 #include "view/video_card.hpp"
 #include "view/video_source.hpp"
 #include "view/media_filter.hpp"
@@ -36,7 +37,11 @@ public:
         auto& item = this->list.at(index);
         cell->labelTitle->setText(item.Name);
         cell->labelExt->setVisibility(brls::Visibility::GONE);
-        fntv::loadPoster(cell->picture, item);
+        auto it = item.ImageTags.find(jellyfin::imageTypePrimary);
+        if (it != item.ImageTags.end()) {
+            Image::load(cell->picture, jellyfin::apiPrimaryImage, item.Id,
+                HTTP::encode_form({{"tag", it->second}, {"maxWidth", "300"}}));
+        }
         return cell;
     }
 
