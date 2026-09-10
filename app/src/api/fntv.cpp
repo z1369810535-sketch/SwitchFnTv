@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -47,10 +48,12 @@ std::string dumpBody(const nlohmann::json& body) {
     return body.dump(-1, ' ', false);
 }
 
+std::mutex rngMutex;
+std::mt19937 rng{static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count())};
+
 std::string randomNonce() {
-    static thread_local std::mt19937 rng{
-        static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count())};
     std::uniform_int_distribution<int> dist(100000, 999999);
+    std::lock_guard<std::mutex> lock(rngMutex);
     return std::to_string(dist(rng));
 }
 
@@ -108,7 +111,7 @@ nlohmann::json asArray(const nlohmann::json& data, const char* key = "list") {
 }
 
 long jsonLong(const nlohmann::json& j, const char* key, long fallback = 0) {
-    if (!j.contains(key) || j[key].is_null()) return fallback;
+    if (!j.is_object() || !j.contains(key) || j[key].is_null()) return fallback;
     if (j[key].is_number()) return static_cast<long>(j[key].get<double>());
     if (j[key].is_string()) {
         try {
@@ -121,6 +124,7 @@ long jsonLong(const nlohmann::json& j, const char* key, long fallback = 0) {
 }
 
 std::string jsonString(const nlohmann::json& j, std::initializer_list<const char*> keys, const std::string& fallback = "") {
+    if (!j.is_object()) return fallback;
     for (auto key : keys) {
         if (j.contains(key) && j[key].is_string()) {
             auto s = j[key].get<std::string>();
@@ -132,7 +136,7 @@ std::string jsonString(const nlohmann::json& j, std::initializer_list<const char
 }
 
 int jsonInt(const nlohmann::json& j, const char* key, int fallback = 0) {
-    if (!j.contains(key) || j[key].is_null()) return fallback;
+    if (!j.is_object() || !j.contains(key) || j[key].is_null()) return fallback;
     if (j[key].is_number_integer()) return j[key].get<int>();
     if (j[key].is_number()) return static_cast<int>(j[key].get<double>());
     if (j[key].is_string()) {
@@ -299,9 +303,11 @@ nlohmann::json requestJson(const std::string& method, const std::string& path, n
         const auto header = signedHeaders(path, bodyStr, token);
         try {
             const std::string resp = requestOnce(method, base + path, bodyStr, header, timeoutMs);
-            auto parsed = nlohmann::json::parse(resp);
+            auto parsed = nlohmann::json::parse(resp, nullptr, false);
+            if (parsed.is_discarded() || !parsed.is_object()) throw std::runtime_error("服务器返回了无法解析的数据");
             const int code = parsed.value("code", 0);
-            const std::string msg = parsed.value("msg", std::string());
+            std::string msg;
+            if (parsed.contains("msg") && parsed["msg"].is_string()) msg = parsed["msg"].get<std::string>();
             if (code == 5000 && msg == "invalid sign") {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
