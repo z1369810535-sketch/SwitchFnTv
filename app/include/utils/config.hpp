@@ -189,8 +189,19 @@ public:
         return EMPTY;
     }
     const std::string& getUrl() const { return this->server_url; }
-    bool isAdmin() const { return this->user->is_admin; }
-    const jellyfin::UserConfig& userConfig() const { return this->user->config; }
+    bool isAdmin() const {
+        for (auto& u : this->users) {
+            if (u.id == this->user_id) return u.is_admin;
+        }
+        return false;
+    }
+    const jellyfin::UserConfig& userConfig() const {
+        static const jellyfin::UserConfig EMPTY;
+        for (auto& u : this->users) {
+            if (u.id == this->user_id) return u.config;
+        }
+        return EMPTY;
+    }
     void addRemote(const AppRemote& r);
     void updateRemote(size_t index, const AppRemote& r);
     void removeRemote(size_t index);
