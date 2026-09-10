@@ -37,6 +37,7 @@ private:
     BRLS_BIND(IconButton, btnPlay, "movie/play");
     BRLS_BIND(IconButton, btnDownload, "movie/download");
     BRLS_BIND(IconButton, btnFavorite, "movie/favorite");
+    BRLS_BIND(brls::Header, labelPeople, "movie/label/people");
     BRLS_BIND(HRecyclerFrame, people, "movie/people");
     BRLS_BIND(HRecyclerFrame, similar, "movie/similar");
 

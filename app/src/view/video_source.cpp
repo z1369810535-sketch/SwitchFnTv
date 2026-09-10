@@ -177,10 +177,7 @@ RecyclingGridItem* VideoDataSource::cellForRow(RecyclingView* recycler, size_t i
             cell->labelExt->setText(std::to_string(item.ProductionYear));
         }
 
-        auto it = item.ImageTags.find(jellyfin::imageTypePrimary);
-        if (it != item.ImageTags.end()) {
-            fntv::loadPoster(cell->picture, item);
-        }
+        fntv::loadPoster(cell->picture, item);
     }
 
     if (item.UserData.IsFavorite) {

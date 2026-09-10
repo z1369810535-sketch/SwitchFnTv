@@ -41,6 +41,7 @@ private:
     BRLS_BIND(HRecyclerFrame, seasons, "series/seasons");
     BRLS_BIND(brls::Header, labelSimilar, "series/label/similar");
     BRLS_BIND(brls::Header, labelSpecial, "series/label/special");
+    BRLS_BIND(brls::Header, labelPeople, "series/label/people");
     BRLS_BIND(HRecyclerFrame, people, "series/people");
     BRLS_BIND(HRecyclerFrame, similar, "series/similar");
     BRLS_BIND(HRecyclerFrame, special, "series/special");

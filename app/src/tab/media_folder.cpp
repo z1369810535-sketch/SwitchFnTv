@@ -53,16 +53,13 @@ public:
     RecyclingGridItem* cellForRow(RecyclingView* recycler, size_t index) override {
         MediaFolderCell* cell = dynamic_cast<MediaFolderCell*>(recycler->dequeueReusableCell("Cell"));
         auto& item = this->list.at(index);
-        auto it = item.ImageTags.find(jellyfin::imageTypePrimary);
-        if (it != item.ImageTags.end()) {
-            fntv::loadPoster(cell->picture, item);
+        fntv::loadPoster(cell->picture, item);
+        cell->picture->setVisibility(brls::Visibility::VISIBLE);
+        if (item.ImageTags.find(jellyfin::imageTypePrimary) != item.ImageTags.end()) {
             cell->labelTitle->setVisibility(brls::Visibility::GONE);
-            cell->picture->setVisibility(brls::Visibility::VISIBLE);
-
         } else {
             cell->labelTitle->setText(item.Name);
             cell->labelTitle->setVisibility(brls::Visibility::VISIBLE);
-            cell->picture->setVisibility(brls::Visibility::GONE);
         }
         return cell;
     }

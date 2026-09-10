@@ -3,6 +3,7 @@
 #include "view/recyling_video.hpp"
 #include "utils/image.hpp"
 #include "api/jellyfin.hpp"
+#include "api/fntv.hpp"
 
 using namespace brls::literals;  // for _i18n
 
@@ -110,14 +111,14 @@ RecyclingGridItem* PeopleDataSource::cellForRow(RecyclingView* recycler, size_t 
     cell->labelExt->setText(item.Role);
 
     if (!item.PrimaryImageTag.empty()) {
-        Image::load(cell->picture, jellyfin::apiPrimaryImage, item.Id,
-            HTTP::encode_form({{"tag", item.PrimaryImageTag}, {"maxWidth", "350"}}));
+        fntv::loadImagePath(cell->picture, item.PrimaryImageTag);
     }
     return cell;
 }
 
 void PeopleDataSource::onItemSelected(brls::Box* recycler, size_t index) {
-    recycler->present(new PeopleView(this->list.at(index)));
+    (void)recycler;
+    (void)index;
 }
 
 void PeopleDataSource::clearData() { this->list.clear(); }

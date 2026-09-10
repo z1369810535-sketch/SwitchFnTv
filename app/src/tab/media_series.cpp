@@ -112,7 +112,14 @@ void MediaSeries::doSeries() {
                 this->labelGenres->setText(fmt::format("{}", fmt::join(r.Genres, ", ")));
                 this->labelGenres->setVisibility(brls::Visibility::VISIBLE);
             }
-            this->people->setVisibility(brls::Visibility::GONE);
+            if (r.People.empty()) {
+                this->labelPeople->setVisibility(brls::Visibility::GONE);
+                this->people->setVisibility(brls::Visibility::GONE);
+            } else {
+                this->labelPeople->setVisibility(brls::Visibility::VISIBLE);
+                this->people->setVisibility(brls::Visibility::VISIBLE);
+                this->people->setDataSource(new PeopleDataSource(r.People));
+            }
             this->updateFavoriteButton(r.UserData.IsFavorite);
             fntv::loadPoster(this->imagePoster, r);
             this->bannerBox->setVisibility(brls::Visibility::GONE);
@@ -122,6 +129,7 @@ void MediaSeries::doSeries() {
         },
         [ASYNC_TOKEN](const std::string& ex) {
             ASYNC_RELEASE
+            this->labelPeople->setVisibility(brls::Visibility::GONE);
             this->people->setVisibility(brls::Visibility::GONE);
             brls::Logger::warning("doSeries {}", ex);
         });

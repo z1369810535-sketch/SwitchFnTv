@@ -6,6 +6,9 @@
 #include <webp/decode.h>
 #endif
 #include <stb_image.h>
+#include <algorithm>
+#include <cctype>
+#include <cstring>
 
 #ifdef BOREALIS_USE_GXM
 #ifndef MAX
@@ -101,6 +104,23 @@ static void dxt_compress(uint8_t* dst, uint8_t* src, uint32_t w, uint32_t h, boo
 }
 #endif
 
+
+#ifdef USE_WEBP
+static bool isWebpPayload(const std::string& url, const std::string& data, const char* contentType) {
+    auto contains = [](const std::string& hay, const char* needle) {
+        if (hay.empty() || !needle) return false;
+        auto it = std::search(hay.begin(), hay.end(), needle, needle + std::strlen(needle),
+            [](char a, char b) {
+                return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+            });
+        return it != hay.end();
+    };
+    if (contains(url, ".webp")) return true;
+    if (contentType && contains(contentType, "webp")) return true;
+    return data.size() >= 12 && std::memcmp(data.data(), "RIFF", 4) == 0 && std::memcmp(data.data() + 8, "WEBP", 4) == 0;
+}
+#endif
+
 Image::Image() : image(nullptr) {
     this->isCancel = std::make_shared<std::atomic_bool>(false);
     brls::Logger::verbose("new Image {}", fmt::ptr(this));
@@ -169,15 +189,18 @@ void Image::doRequest(HTTP& s) {
         bool isWebp = false;
 #ifdef USE_WEBP
         char* ct = nullptr;
-        if (url.find("Webp") != std::string::npos || (s.getinfo(&ct) && strcmp(ct, "image/webp") == 0)) {
+        s.getinfo(&ct);
+        if (isWebpPayload(url, data, ct)) {
             imageData = WebPDecodeRGBA((const uint8_t*)data.c_str(), data.size(), &imageW, &imageH);
-            isWebp = true;
-        } else
+            isWebp = imageData != nullptr;
+        }
 #endif
-        {
+        if (!imageData) {
             int n;
             imageData = stbi_load_from_memory((unsigned char*)data.c_str(), data.size(), &imageW, &imageH, &n, 4);
+            isWebp = false;
         }
+        if (!imageData) brls::Logger::warning("decode image failed {} bytes {}", url, data.size());
 
 #ifdef BOREALIS_USE_GXM
         if (imageData) {

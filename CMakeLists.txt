@@ -189,6 +189,8 @@ else ()
         list(APPEND APP_PLATFORM_LIB ${LIBWEBP_LIBRARIES})
         list(APPEND APP_PLATFORM_OPTION -DUSE_WEBP)
         link_directories(${LIBWEBP_LIBRARY_DIRS})
+    elseif (PLATFORM_SWITCH)
+        message(WARNING "libwebp not found; Feiniu posters are webp and will appear blank")
     endif ()
 endif()
 

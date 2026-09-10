@@ -149,12 +149,154 @@ int jsonInt(const nlohmann::json& j, const char* key, int fallback = 0) {
     return fallback;
 }
 
+std::string firstImagePath(const nlohmann::json& j) {
+    static const char* keys[] = {
+        "poster", "posters", "still_path", "poster_path", "backdrop", "profile_path", "avatar", "cover"};
+    if (!j.is_object()) return "";
+    for (auto key : keys) {
+        if (!j.contains(key)) continue;
+        const auto& v = j[key];
+        if (v.is_string()) {
+            auto s = v.get<std::string>();
+            if (!s.empty() && s != "null") return s;
+        } else if (v.is_array() && !v.empty()) {
+            if (v[0].is_string()) {
+                auto s = v[0].get<std::string>();
+                if (!s.empty()) return s;
+            } else if (v[0].is_object()) {
+                auto s = jsonString(v[0], {"url", "path", "poster", "src", "profile_path"});
+                if (!s.empty()) return s;
+            }
+        } else if (v.is_object()) {
+            auto s = jsonString(v, {"url", "path", "poster", "src", "profile_path"});
+            if (!s.empty()) return s;
+        }
+    }
+    return "";
+}
+
 std::string posterOf(const nlohmann::json& j) {
-    auto p = jsonString(j, {"poster", "posters", "still_path", "poster_path", "backdrop"});
+    auto p = firstImagePath(j);
     if (!p.empty()) return p;
-    auto guid = jsonString(j, {"guid", "id"});
-    if (guid.empty()) return "";
-    return std::string("/v/api/v1/sys/img/") + guid;
+    return jsonString(j, {"guid", "id"});
+}
+
+std::string resolveImageRel(std::string path) {
+    while (!path.empty() && (path.front() == ' ' || path.front() == '\t')) path.erase(path.begin());
+    while (!path.empty() && (path.back() == ' ' || path.back() == '\t')) path.pop_back();
+    if (path.empty()) return "";
+    if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) return path;
+    if (path.rfind("//", 0) == 0) return std::string("http:") + path;
+    std::string query;
+    auto q = path.find('?');
+    if (q != std::string::npos) {
+        query = path.substr(q);
+        path = path.substr(0, q);
+    }
+    if (path.rfind("/v/", 0) == 0) return path + query;
+    if (path.rfind("v/", 0) == 0) return "/" + path + query;
+    if (path.rfind("/api/", 0) == 0) return "/v" + path + query;
+    if (path.rfind("/sys/img/", 0) == 0) return "/v/api/v1" + path + query;
+    if (!path.empty() && path.front() == '/') path.erase(path.begin());
+    return std::string("/v/api/v1/sys/img/") + path + query;
+}
+
+HTTP::Header imageHeaders(const std::string& urlOrRel, const std::string& token) {
+    std::string path = urlOrRel;
+    auto scheme = path.find("://");
+    if (scheme != std::string::npos) {
+        auto slash = path.find('/', scheme + 3);
+        path = slash == std::string::npos ? "/" : path.substr(slash);
+    }
+    auto q = path.find('?');
+    if (q != std::string::npos) path = path.substr(0, q);
+    return {
+        "Authorization: " + token,
+        "Authx: " + genAuthx(path, ""),
+        "Accept: image/webp,image/jpeg,image/png,image/*,*/*",
+    };
+}
+
+jellyfin::MediaPeople mapPerson(const nlohmann::json& j, const std::string& defaultRole = "") {
+    jellyfin::MediaPeople p;
+    p.Id = jsonString(j, {"guid", "id", "person_guid"});
+    p.Name = jsonString(j, {"name", "title", "person_name", "actor_name"});
+    p.Role = jsonString(j, {"role", "character", "job", "department", "type"}, defaultRole);
+    p.PrimaryImageTag = firstImagePath(j);
+    if (p.PrimaryImageTag.empty()) p.PrimaryImageTag = jsonString(j, {"profile_path", "poster", "avatar"});
+    return p;
+}
+
+void appendPeople(std::vector<jellyfin::MediaPeople>& out, const nlohmann::json& j, const char* key, const std::string& role) {
+    if (!j.is_object() || !j.contains(key)) return;
+    const auto& v = j[key];
+    auto push = [&](jellyfin::MediaPeople p) {
+        if (p.Name.empty()) return;
+        if (p.Id.empty()) p.Id = p.Name;
+        if (p.Role.empty()) p.Role = role;
+        out.push_back(std::move(p));
+    };
+    if (v.is_array()) {
+        for (auto& it : v) {
+            if (it.is_string()) {
+                jellyfin::MediaPeople p;
+                p.Name = it.get<std::string>();
+                p.Role = role;
+                p.Id = p.Name;
+                push(std::move(p));
+            } else if (it.is_object()) {
+                push(mapPerson(it, role));
+            }
+        }
+    } else if (v.is_string()) {
+        jellyfin::MediaPeople p;
+        p.Name = v.get<std::string>();
+        p.Role = role;
+        p.Id = p.Name;
+        push(std::move(p));
+    } else if (v.is_object()) {
+        push(mapPerson(v, role));
+    }
+}
+
+std::vector<jellyfin::MediaPeople> mapPeople(const nlohmann::json& j) {
+    std::vector<jellyfin::MediaPeople> out;
+    appendPeople(out, j, "people", "");
+    appendPeople(out, j, "persons", "");
+    appendPeople(out, j, "actors", "演员");
+    appendPeople(out, j, "actor", "演员");
+    appendPeople(out, j, "casts", "演员");
+    appendPeople(out, j, "cast", "演员");
+    appendPeople(out, j, "directors", "导演");
+    appendPeople(out, j, "director", "导演");
+    appendPeople(out, j, "writers", "编剧");
+    appendPeople(out, j, "writer", "编剧");
+    return out;
+}
+
+std::vector<jellyfin::MediaPeople> fetchPeople(const std::string& itemGuid) {
+    nlohmann::json data;
+    try {
+        data = requestJson("POST", std::string("/v/api/v1/person/list/") + itemGuid, nlohmann::json::object());
+    } catch (...) {
+        try {
+            data = requestJson("GET", std::string("/v/api/v1/person/list/") + itemGuid);
+        } catch (...) {
+            data = requestJson("POST", "/v/api/v1/person/list", nlohmann::json{{"item_guid", itemGuid}});
+        }
+    }
+    auto arr = asArray(data);
+    if (arr.empty()) arr = asArray(data, "people");
+    if (arr.empty()) arr = asArray(data, "items");
+    if (arr.empty()) arr = asArray(data, "actors");
+    std::vector<jellyfin::MediaPeople> out;
+    for (auto& it : arr) {
+        auto p = mapPerson(it);
+        if (p.Name.empty()) continue;
+        if (p.Id.empty()) p.Id = p.Name;
+        out.push_back(std::move(p));
+    }
+    return out;
 }
 
 void fillUserData(jellyfin::UserDataResult& u, const nlohmann::json& j, uint64_t runtimeTicks) {
@@ -396,7 +538,11 @@ jellyfin::Detail mapDetail(const nlohmann::json& j) {
             if (g.is_string()) d.Genres.push_back(g.get<std::string>());
             else if (g.is_object()) d.Genres.push_back(jsonString(g, {"name", "title"}));
         }
+    } else {
+        auto genre = jsonString(j, {"genre", "genres"});
+        if (!genre.empty()) d.Genres.push_back(genre);
     }
+    d.People = mapPeople(j);
     return d;
 }
 
@@ -509,15 +655,24 @@ jellyfin::Result<jellyfin::Episode> listItems(const std::string& parentGuid, siz
 }
 
 jellyfin::Detail getDetail(const std::string& guid) {
+    jellyfin::Detail d;
     try {
         auto data = requestJson("GET", std::string("/v/api/v1/item/") + guid);
-        if (data.is_object() && data.contains("item") && data["item"].is_object()) return mapDetail(data["item"]);
-        return mapDetail(data);
+        if (data.is_object() && data.contains("item") && data["item"].is_object()) d = mapDetail(data["item"]);
+        else d = mapDetail(data);
     } catch (...) {
         auto info = requestJson("POST", "/v/api/v1/play/info", nlohmann::json{{"item_guid", guid}});
-        if (info.contains("item") && info["item"].is_object()) return mapDetail(info["item"]);
-        return mapDetail(info);
+        if (info.contains("item") && info["item"].is_object()) d = mapDetail(info["item"]);
+        else d = mapDetail(info);
     }
+    if (d.People.empty()) {
+        try {
+            d.People = fetchPeople(guid);
+        } catch (const std::exception& ex) {
+            brls::Logger::warning("person list failed: {}", ex.what());
+        }
+    }
+    return d;
 }
 
 jellyfin::Result<jellyfin::Episode> listSeasons(const std::string& seriesGuid) {
@@ -686,17 +841,11 @@ PlaySession preparePlay(const std::string& itemGuid) {
 
 void loadImagePath(brls::Image* view, const std::string& path) {
     if (!view || path.empty()) return;
-    std::string rel = path;
-    std::string url;
-    if (rel.rfind("http://", 0) == 0 || rel.rfind("https://", 0) == 0) {
-        url = rel;
-        auto pos = rel.find('/', rel.find("://") + 3);
-        rel = pos == std::string::npos ? "/" : rel.substr(pos);
-    } else {
-        if (rel.front() != '/') rel = std::string("/v/api/v1/sys/img/") + rel;
-        url = currentBase("") + rel;
-    }
-    Image::with(view, url, signedHeaders(rel, "", currentToken("")));
+    const auto rel = resolveImageRel(path);
+    if (rel.empty()) return;
+    std::string url = rel;
+    if (rel.rfind("http://", 0) != 0 && rel.rfind("https://", 0) != 0) url = currentBase("") + rel;
+    Image::with(view, url, imageHeaders(rel, currentToken("")));
 }
 
 void loadPoster(brls::Image* view, const jellyfin::Item& item) {
