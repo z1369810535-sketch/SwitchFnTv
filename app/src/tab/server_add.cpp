@@ -66,7 +66,14 @@ bool ServerAdd::onConnect() {
                 ASYNC_RELEASE
                 this->btnConnect->setTextColor(brls::Application::getTheme().getColor("brls/text"));
                 brls::Application::unblockInputs();
-                Dialog::show(msg);
+                Dialog::show(msg.empty() ? "Connect failed" : msg);
+            });
+        } catch (...) {
+            brls::sync([ASYNC_TOKEN]() {
+                ASYNC_RELEASE
+                this->btnConnect->setTextColor(brls::Application::getTheme().getColor("brls/text"));
+                brls::Application::unblockInputs();
+                Dialog::show("Connect failed");
             });
         }
     });
