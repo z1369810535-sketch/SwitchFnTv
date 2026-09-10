@@ -20,7 +20,7 @@ ServerLogin::ServerLogin(const std::string& name, const std::string& url, const 
 
     this->btnSignin->registerClickAction([this](...) { return this->onSignin(); });
     this->btnQuickConnect->setVisibility(brls::Visibility::GONE);
-    this->labelDisclaimer->setText("???????????????????Switch ?? SD ????????????");
+    this->labelDisclaimer->setText("Password is not saved. Session token is stored on the SD card and is not secure.");
     this->labelDisclaimer->setVisibility(brls::Visibility::VISIBLE);
 }
 
