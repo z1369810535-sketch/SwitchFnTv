@@ -102,7 +102,8 @@ private:
 
 class MediaSeason : public brls::Box {
 public:
-    MediaSeason(const jellyfin::Season& item) : seriesId(item.SeriesId), seasonId(item.Id) {
+    MediaSeason(const jellyfin::Season& item) : seasonId(item.Id) {
+        if (item.SeriesId.is_string()) this->seriesId = item.SeriesId.get<std::string>();
         this->inflateFromXMLRes("xml/tabs/seasons.xml");
 
         this->recycler->registerCell("Cell", []() {
@@ -137,7 +138,6 @@ public:
                 ASYNC_RELEASE
                 this->recycler->setError(ex);
             });
-    }
     }
 
 private:
