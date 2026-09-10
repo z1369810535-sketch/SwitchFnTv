@@ -201,6 +201,10 @@ void MediaCollection::doPreferences() {
     this->doRequest();
 }
 
+void MediaCollection::loadFilter() {}
+
+void MediaCollection::saveFilter() {}
+
 void MediaCollection::doRequest() {
     const std::string parent = this->itemId;
     const std::string type = this->itemType;
