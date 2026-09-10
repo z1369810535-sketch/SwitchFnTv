@@ -6,7 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <borealis.hpp>
 #include "api/http.hpp"
-#include "api/jellyfin/media.hpp"
+#include "api/jellyfin.hpp"
 
 namespace fntv {
 
