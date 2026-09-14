@@ -123,7 +123,7 @@ PlayerView::~PlayerView() {
 void PlayerView::setSeries(const std::string& seriesId) {
     ASYNC_RETAIN
     fntv::async<jellyfin::Result<jellyfin::Episode>>(
-        [seriesId] { return fntv::listEpisodes(seriesId); },
+        [seriesId] { return fntv::listSeriesEpisodes(seriesId); },
         [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
             ASYNC_RELEASE
             int index = -1;

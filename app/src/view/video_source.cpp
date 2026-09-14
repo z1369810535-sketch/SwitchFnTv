@@ -15,6 +15,7 @@
 #include "view/ebook_view.hpp"
 #include "api/jellyfin.hpp"
 #include "api/fntv.hpp"
+#include <unordered_set>
 
 using namespace brls::literals;  // for _i18n
 
@@ -128,7 +129,13 @@ public:
     void doRequest() {
         ASYNC_RETAIN
         fntv::async<jellyfin::Result<jellyfin::Episode>>(
-            [this] { return fntv::listEpisodes(this->seasonId); },
+            [this] {
+                auto r = fntv::listEpisodes(this->seasonId);
+                if (!this->seriesId.empty()) {
+                    for (auto& episode : r.Items) episode.SeriesId = this->seriesId;
+                }
+                return r;
+            },
             [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
                 ASYNC_RELEASE
                 this->recycler->setDataSource(new EpisodeDataSource(r.Items));
@@ -157,6 +164,10 @@ RecyclingGridItem* VideoDataSource::cellForRow(RecyclingView* recycler, size_t i
     VideoCardCell* cell = dynamic_cast<VideoCardCell*>(recycler->dequeueReusableCell("Cell"));
     auto& item = this->list.at(index);
     cell->setId(item.Id);
+    cell->labelTitle->setVisibility(brls::Visibility::VISIBLE);
+    cell->labelExt->setVisibility(brls::Visibility::VISIBLE);
+    cell->labelExt->setText("");
+    cell->rectProgress->getParent()->setVisibility(brls::Visibility::GONE);
     if (item.Type == jellyfin::mediaTypeEpisode) {
         if (item.SeriesName.empty()) {
             cell->labelTitle->setVisibility(brls::Visibility::GONE);
@@ -225,7 +236,7 @@ void VideoDataSource::onItemSelected(brls::Box* recycler, size_t index) {
         recycler->present(new MediaMovie(item));
     } else if (item.Type == jellyfin::mediaTypeFolder || item.Type == jellyfin::mediaTypeBoxSet ||
                item.Type == jellyfin::mediaTypePhotoAlbum) {
-        recycler->present(new MediaCollection(item.Id));
+        recycler->present(new MediaCollection(item.Id, jellyfin::mediaTypeFolder));
     } else if (item.Type == jellyfin::mediaTypeMusicVideo || item.Type == jellyfin::mediaTypeVideo) {
         PlayerView* view = new PlayerView(item);
         view->setTitie(item.ProductionYear ? fmt::format("{} ({})", item.Name, item.ProductionYear) : item.Name);
@@ -268,8 +279,17 @@ void VideoDataSource::onContextMenu(VideoCardCell* cell, size_t index) {
 
 void VideoDataSource::clearData() { this->list.clear(); }
 
-void VideoDataSource::appendData(const MediaList& data) {
-    this->list.insert(this->list.end(), data.begin(), data.end());
+size_t VideoDataSource::appendData(const MediaList& data) {
+    std::unordered_set<std::string> seen;
+    for (const auto& item : this->list) seen.insert(item.Id);
+    size_t added = 0;
+    for (const auto& item : data) {
+        if (seen.insert(item.Id).second) {
+            this->list.push_back(item);
+            ++added;
+        }
+    }
+    return added;
 }
 
 ProgramDataSource::ProgramDataSource(const MediaList& r) : list(std::move(r)) {

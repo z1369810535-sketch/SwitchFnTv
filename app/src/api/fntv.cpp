@@ -4,6 +4,7 @@
 #include "utils/misc.hpp"
 
 #include <cctype>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -12,6 +13,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace fntv {
@@ -107,7 +109,22 @@ std::string humanError(const std::string& msg, int code) {
 nlohmann::json asArray(const nlohmann::json& data, const char* key = "list") {
     if (data.is_array()) return data;
     if (data.is_object() && data.contains(key) && data[key].is_array()) return data[key];
+    if (std::string(key) == "list" && data.is_object() && data.contains("items") && data["items"].is_array())
+        return data["items"];
     return nlohmann::json::array();
+}
+
+nlohmann::json listArray(const nlohmann::json& data) {
+    if (data.is_array()) return data;
+    if (data.is_null()) return nlohmann::json::array();
+    if (data.is_object()) {
+        for (auto key : {"list", "items", "seasons", "episodes"}) {
+            if (!data.contains(key)) continue;
+            if (data[key].is_array()) return data[key];
+            if (data[key].is_null()) return nlohmann::json::array();
+        }
+    }
+    throw std::runtime_error("服务器列表格式不兼容，请检查飞牛影视版本");
 }
 
 long jsonLong(const nlohmann::json& j, const char* key, long fallback = 0) {
@@ -446,8 +463,10 @@ nlohmann::json requestJson(const std::string& method, const std::string& path, n
         try {
             const std::string resp = requestOnce(method, base + path, bodyStr, header, timeoutMs);
             auto parsed = nlohmann::json::parse(resp, nullptr, false);
-            if (parsed.is_discarded() || !parsed.is_object()) throw std::runtime_error("服务器返回了无法解析的数据");
-            const int code = parsed.value("code", 0);
+            if (parsed.is_discarded() || (!parsed.is_object() && !parsed.is_array()))
+                throw std::runtime_error("服务器返回了无法解析的数据");
+            if (parsed.is_array()) return parsed;
+            const int code = jsonInt(parsed, "code", 0);
             std::string msg;
             if (parsed.contains("msg") && parsed["msg"].is_string()) msg = parsed["msg"].get<std::string>();
             if (code == 5000 && msg == "invalid sign") {
@@ -492,7 +511,13 @@ jellyfin::Episode mapItem(const nlohmann::json& j) {
     jellyfin::Episode item;
     item.Id = jsonString(j, {"guid", "id", "item_guid"});
     item.Name = jsonString(j, {"title", "name", "tv_title"});
-    item.Type = mapType(jsonString(j, {"type"}, "Movie"));
+    auto rawType = jsonString(j, {"type"});
+    if (rawType.empty()) {
+        if (jsonInt(j, "episode_number", -1) > 0) rawType = "Episode";
+        else if (jsonInt(j, "season_number", -1) >= 0) rawType = "Season";
+        else rawType = "Movie";
+    }
+    item.Type = mapType(rawType);
     const auto poster = posterOf(j);
     if (!poster.empty()) item.ImageTags[jellyfin::imageTypePrimary] = poster;
     const auto date = jsonString(j, {"air_date", "release_date", "premiere_date"});
@@ -506,10 +531,11 @@ jellyfin::Episode mapItem(const nlohmann::json& j) {
     item.Overview = jsonString(j, {"overview", "desc", "description"});
     item.IndexNumber = jsonInt(j, "episode_number", jsonInt(j, "index", 0));
     item.ParentIndexNumber = jsonInt(j, "season_number", 0);
+    if (item.Type == jellyfin::mediaTypeSeason) item.IndexNumber = item.ParentIndexNumber;
     item.SeriesName = jsonString(j, {"tv_title", "series_name", "parent_title"});
-    const auto parent = jsonString(j, {"ancestor_guid", "series_guid", "parent_guid"});
+    // ancestor_guid identifies the media library on some servers, not the TV show.
+    const auto parent = jsonString(j, {"tv_guid", "series_guid", "parent_guid"});
     if (!parent.empty()) item.SeriesId = parent;
-    if (item.Type == jellyfin::mediaTypeSeason) item.SeriesId = jsonString(j, {"parent_guid", "ancestor_guid"});
     return item;
 }
 
@@ -592,18 +618,23 @@ std::vector<jellyfin::Collection> listLibraries() {
     nlohmann::json data;
     try {
         data = requestJson("GET", "/v/api/v1/mediadb/list");
-    } catch (...) {
-        data = requestJson("GET", "/v/api/v1/mdb/list");
+    } catch (const std::exception& primary) {
+        const std::string error = primary.what();
+        try {
+            data = requestJson("GET", "/v/api/v1/mdb/list");
+        } catch (...) {
+            throw std::runtime_error(error);
+        }
     }
     std::vector<jellyfin::Collection> out;
-    for (auto& it : asArray(data)) {
+    for (auto& it : listArray(data)) {
         jellyfin::Collection c;
         c.Id = jsonString(it, {"guid", "id", "mdb_guid"});
-        c.Name = jsonString(it, {"name", "mdb_name", "title"});
+        c.Name = jsonString(it, {"name", "mdb_name", "title"}, "未命名媒体库");
         c.Type = jellyfin::mediaTypeFolder;
         c.IsFolder = true;
         c.CollectionType = collectionType(it);
-        auto poster = posterOf(it);
+        auto poster = firstImagePath(it);
         if (!poster.empty()) c.ImageTags[jellyfin::imageTypePrimary] = poster;
         if (!c.Id.empty()) out.push_back(std::move(c));
     }
@@ -613,7 +644,8 @@ std::vector<jellyfin::Collection> listLibraries() {
 jellyfin::Result<jellyfin::Episode> listItems(const std::string& parentGuid, size_t start, size_t pageSize, const std::string& itemType) {
     const int page = static_cast<int>(pageSize ? start / pageSize + 1 : 1);
     const int size = static_cast<int>(pageSize ? pageSize : 50);
-    const bool drillDown = itemType == jellyfin::mediaTypeSeason || itemType == jellyfin::mediaTypeEpisode;
+    const bool drillDown = itemType == jellyfin::mediaTypeSeason || itemType == jellyfin::mediaTypeEpisode ||
+                           itemType == jellyfin::mediaTypeFolder;
 
     nlohmann::json req = {
         {"sort_column", "sort_title"},
@@ -634,23 +666,17 @@ jellyfin::Result<jellyfin::Episode> listItems(const std::string& parentGuid, siz
     }
 
     auto data = requestJson("POST", "/v/api/v1/item/list", req);
-    auto arr = asArray(data);
-    if (arr.empty() && !drillDown) {
-        data = requestJson("POST", "/v/api/v1/item/list", nlohmann::json{
-            {"parent_guid", parentGuid},
-            {"exclude_folder", 0},
-            {"sort_column", "sort_title"},
-            {"sort_type", "ASC"},
-            {"page", page},
-            {"page_size", size},
-        });
-        arr = asArray(data);
-    }
+    // An empty page is the end of this query. Switching to parent_guid here mixes
+    // directory entries into an existing result and can repeat the first page.
+    auto arr = listArray(data);
 
     jellyfin::Result<jellyfin::Episode> r;
     r.StartIndex = static_cast<long>(start);
-    r.TotalRecordCount = data.is_object() ? data.value("total", static_cast<long>(arr.size())) : static_cast<long>(arr.size());
-    for (auto& it : arr) r.Items.push_back(mapItem(it));
+    r.TotalRecordCount = jsonLong(data, "total", jsonLong(data, "total_count", -1));
+    for (auto& it : arr) {
+        auto item = mapItem(it);
+        if (!item.Id.empty()) r.Items.push_back(std::move(item));
+    }
     return r;
 }
 
@@ -675,41 +701,136 @@ jellyfin::Detail getDetail(const std::string& guid) {
     return d;
 }
 
-jellyfin::Result<jellyfin::Episode> listSeasons(const std::string& seriesGuid) {
+namespace {
+
+// The 0.9.7 web client receives full arrays from the season/episode endpoints.
+// Older/alternative responses may wrap a paginated list: complete those through
+// the supported item/list endpoint.
+nlohmann::json allChildren(const std::string& guid) {
+    auto rows = nlohmann::json::array();
+    std::unordered_set<std::string> seen;
+    for (size_t page = 0; page < 1000; ++page) {
+        auto data = requestJson("POST", "/v/api/v1/item/list", nlohmann::json{
+            {"parent_guid", guid}, {"exclude_folder", 0}, {"sort_column", "sort_title"},
+            {"sort_type", "ASC"}, {"page", page + 1}, {"page_size", 100}});
+        auto arr = listArray(data);
+        size_t added = 0;
+        for (const auto& row : arr) {
+            const auto id = jsonString(row, {"guid", "id", "item_guid"});
+            if (!id.empty() && seen.insert(id).second) {
+                rows.push_back(row);
+                ++added;
+            }
+        }
+        const long total = jsonLong(data, "total", jsonLong(data, "total_count", -1));
+        if (total >= 0 && rows.size() >= static_cast<size_t>(total)) return rows;
+        if (arr.empty()) {
+            if (total > static_cast<long>(rows.size()))
+                throw std::runtime_error("服务器返回的季或剧集数量少于总数，请刷新后重试");
+            return rows;
+        }
+        if (!added) {
+            if (total < 0) return rows; // Unpaged servers can ignore page/page_size.
+            throw std::runtime_error("服务器重复返回同一页，无法完整加载季或剧集");
+        }
+    }
+    throw std::runtime_error("季或剧集列表超过加载上限，请检查服务器分页");
+}
+
+nlohmann::json childList(const std::string& endpoint, const std::string& guid) {
     nlohmann::json data;
     try {
-        data = requestJson("GET", std::string("/v/api/v1/season/list/") + seriesGuid);
-    } catch (...) {
-        data = requestJson("POST", "/v/api/v1/item/list", nlohmann::json{
-            {"parent_guid", seriesGuid},
-            {"exclude_folder", 0},
-            {"sort_column", "sort_title"},
-            {"sort_type", "ASC"},
-        });
+        data = requestJson("GET", endpoint + guid);
+    } catch (const std::exception& primary) {
+        const std::string error = primary.what();
+        try {
+            return allChildren(guid);
+        } catch (...) {
+            throw std::runtime_error(error);
+        }
     }
+    auto rows = listArray(data);
+    const auto total = jsonLong(data, "total", jsonLong(data, "total_count", -1));
+    if (rows.empty()) return allChildren(guid);
+    if (total > static_cast<long>(rows.size())) {
+        auto complete = allChildren(guid);
+        std::unordered_set<std::string> seen;
+        for (const auto& row : rows) seen.insert(jsonString(row, {"guid", "id", "item_guid"}));
+        for (const auto& row : complete) {
+            const auto id = jsonString(row, {"guid", "id", "item_guid"});
+            if (!id.empty() && seen.insert(id).second) rows.push_back(row);
+        }
+        if (rows.size() < static_cast<size_t>(total))
+            throw std::runtime_error("服务器未返回完整的季或剧集列表，请刷新后重试");
+    }
+    return rows;
+}
+
+void sortEpisodes(std::vector<jellyfin::Episode>& items) {
+    std::stable_sort(items.begin(), items.end(), [](const auto& a, const auto& b) {
+        if (a.ParentIndexNumber != b.ParentIndexNumber) return a.ParentIndexNumber < b.ParentIndexNumber;
+        return a.IndexNumber < b.IndexNumber;
+    });
+}
+
+}  // namespace
+
+jellyfin::Result<jellyfin::Episode> listSeasons(const std::string& seriesGuid) {
     jellyfin::Result<jellyfin::Episode> r;
-    auto arr = asArray(data);
-    r.TotalRecordCount = static_cast<long>(arr.size());
+    auto arr = childList("/v/api/v1/season/list/", seriesGuid);
+    std::unordered_set<std::string> seen;
     for (auto& it : arr) {
         auto item = mapItem(it);
-        if (item.Type.empty()) item.Type = jellyfin::mediaTypeSeason;
-        if (item.SeriesId.is_null()) item.SeriesId = seriesGuid;
+        if (jsonString(it, {"type"}).empty() && jsonInt(it, "episode_number", -1) <= 0) {
+            item.Type = jellyfin::mediaTypeSeason;
+            item.IndexNumber = jsonInt(it, "season_number", jsonInt(it, "index", 0));
+        }
+        if (item.Type != jellyfin::mediaTypeSeason && item.Type != jellyfin::mediaTypeEpisode) continue;
+        if (item.Id.empty() || !seen.insert(item.Id).second) continue;
+        item.SeriesId = seriesGuid;
+        if (item.Name.empty()) item.Name = "第 " + std::to_string(item.IndexNumber) + " 季";
         r.Items.push_back(std::move(item));
     }
+    sortEpisodes(r.Items);
+    r.TotalRecordCount = static_cast<long>(r.Items.size());
     return r;
 }
 
 jellyfin::Result<jellyfin::Episode> listEpisodes(const std::string& guid) {
-    auto data = requestJson("GET", std::string("/v/api/v1/episode/list/") + guid);
     jellyfin::Result<jellyfin::Episode> r;
-    auto arr = asArray(data);
-    r.TotalRecordCount = static_cast<long>(arr.size());
+    auto arr = childList("/v/api/v1/episode/list/", guid);
+    std::unordered_set<std::string> seen;
     for (auto& it : arr) {
         auto item = mapItem(it);
+        const auto rawType = jsonString(it, {"type"});
+        if (!rawType.empty() && item.Type != jellyfin::mediaTypeEpisode && item.Type != jellyfin::mediaTypeMovie) continue;
+        if (item.Id.empty() || !seen.insert(item.Id).second) continue;
         item.Type = jellyfin::mediaTypeEpisode;
         if (item.SeriesId.is_null()) item.SeriesId = guid;
         r.Items.push_back(std::move(item));
     }
+    sortEpisodes(r.Items);
+    r.TotalRecordCount = static_cast<long>(r.Items.size());
+    return r;
+}
+
+jellyfin::Result<jellyfin::Episode> listSeriesEpisodes(const std::string& seriesGuid) {
+    auto children = listSeasons(seriesGuid);
+    if (children.Items.empty()) return listEpisodes(seriesGuid);
+    jellyfin::Result<jellyfin::Episode> r;
+    std::unordered_set<std::string> seen;
+    for (const auto& child : children.Items) {
+        auto episodes = child.Type == jellyfin::mediaTypeSeason ? listEpisodes(child.Id).Items
+                                                               : std::vector<jellyfin::Episode>{child};
+        for (auto& episode : episodes) {
+            if (!seen.insert(episode.Id).second) continue;
+            episode.SeriesId = seriesGuid;
+            if (child.Type == jellyfin::mediaTypeSeason) episode.ParentIndexNumber = child.IndexNumber;
+            r.Items.push_back(std::move(episode));
+        }
+    }
+    sortEpisodes(r.Items);
+    r.TotalRecordCount = static_cast<long>(r.Items.size());
     return r;
 }
 

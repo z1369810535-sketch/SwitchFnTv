@@ -22,7 +22,7 @@ public:
 
     void clearData() override;
 
-    void appendData(const MediaList& data);
+    size_t appendData(const MediaList& data);
 
 protected:
     MediaList list;

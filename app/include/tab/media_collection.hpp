@@ -25,7 +25,7 @@ private:
 
     /// @brief 获取显示配置
     void doPreferences();
-    void doRequest();
+    void doRequest(bool refresh = false);
 
     void loadFilter();
     void saveFilter();
@@ -35,6 +35,9 @@ private:
     std::string itemType;
     size_t pageSize;
     size_t startIndex;
+    size_t requestGeneration = 0;
+    bool loading = false;
+    bool hasMore = true;
 
     std::string prefId;
     std::string prefKey;

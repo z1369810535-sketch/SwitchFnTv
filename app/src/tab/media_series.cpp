@@ -138,18 +138,27 @@ void MediaSeries::doSeries() {
 void MediaSeries::doSeason() {
     ASYNC_RETAIN
     fntv::async<jellyfin::Result<jellyfin::Episode>>(
-        [this] { return fntv::listSeasons(this->seriesId); },
+        [this] {
+            auto r = fntv::listSeasons(this->seriesId);
+            if (r.Items.empty()) r = fntv::listEpisodes(this->seriesId);
+            return r;
+        },
         [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
             ASYNC_RELEASE
             if (r.Items.empty()) {
-                this->labelSeasons->setVisibility(brls::Visibility::GONE);
-                this->seasons->setVisibility(brls::Visibility::GONE);
+                this->labelSeasons->setSubtitle("暂无可用的季或剧集");
+                this->seasons->setDataSource(new VideoDataSource(r.Items));
                 return;
             }
+            this->labelSeasons->setVisibility(brls::Visibility::VISIBLE);
+            this->seasons->setVisibility(brls::Visibility::VISIBLE);
+            this->labelSeasons->setSubtitle(std::to_string(r.Items.size()));
             this->seasons->setDataSource(new VideoDataSource(r.Items, this->seriesId));
         },
         [ASYNC_TOKEN](const std::string& ex) {
             ASYNC_RELEASE
+            this->labelSeasons->setSubtitle(ex);
+            brls::Application::notify(ex);
             brls::Logger::warning("doSeason {}", ex);
         });
 }
@@ -165,11 +174,11 @@ void MediaSeries::doSpecial() {}
 void MediaSeries::doPlay() {
     ASYNC_RETAIN
     fntv::async<jellyfin::Result<jellyfin::Episode>>(
-        [this] { return fntv::listEpisodes(this->seriesId); },
+        [this] { return fntv::listSeriesEpisodes(this->seriesId); },
         [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
             ASYNC_RELEASE
             if (r.Items.empty()) {
-                brls::Application::notify("????????");
+                brls::Application::notify("暂无可播放的剧集");
                 return;
             }
             PlayerView* view = new PlayerView(r.Items[0]);

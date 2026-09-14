@@ -155,16 +155,12 @@ MediaCollection::MediaCollection(const std::string& itemId, const std::string& i
     std::transform(this->prefKey.begin(), this->prefKey.end(), this->prefKey.begin(), ::tolower);
 
     this->recycler->registerAction("hints/refresh"_i18n, brls::BUTTON_BACK, [this](...) {
-        this->startIndex = 0;
-        this->recycler->showSkeleton();
-        this->doRequest();
+        this->doRequest(true);
         return true;
     });
 
     this->registerAction(KeyBind::getRefresh(), [this](...) {
-        this->startIndex = 0;
-        this->recycler->showSkeleton();
-        this->doRequest();
+        this->doRequest(true);
         return true;
     });
 
@@ -184,9 +180,7 @@ MediaCollection::MediaCollection(const std::string& itemId, const std::string& i
         this->registerAction("main/media/sort"_i18n, brls::BUTTON_Y, [this](...) {
             MediaFilter* filter = new MediaFilter();
             filter->getEvent()->subscribe([this]() {
-                this->startIndex = 0;
-                this->recycler->showSkeleton();
-                this->doRequest();
+                this->doRequest(true);
             });
             brls::Application::pushActivity(new brls::Activity(filter));
             return true;
@@ -206,7 +200,17 @@ void MediaCollection::loadFilter() {}
 
 void MediaCollection::saveFilter() {}
 
-void MediaCollection::doRequest() {
+void MediaCollection::doRequest(bool refresh) {
+    if (refresh) {
+        ++this->requestGeneration;
+        this->startIndex = 0;
+        this->loading = false;
+        this->hasMore = true;
+        this->recycler->showSkeleton();
+    }
+    if (this->loading || !this->hasMore) return;
+    this->loading = true;
+    const auto generation = this->requestGeneration;
     const std::string parent = this->itemId;
     const std::string type = this->itemType;
     const size_t start = this->startIndex;
@@ -215,24 +219,30 @@ void MediaCollection::doRequest() {
     ASYNC_RETAIN
     fntv::async<jellyfin::Result<jellyfin::Episode>>(
         [parent, type, start, page] { return fntv::listItems(parent, start, page, type); },
-        [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
+        [ASYNC_TOKEN, generation, page](const jellyfin::Result<jellyfin::Episode>& r) {
             ASYNC_RELEASE
-            this->startIndex = r.StartIndex + this->pageSize;
-            if (r.TotalRecordCount == 0 && r.Items.empty()) {
-                this->recycler->setEmpty();
-            } else if (r.StartIndex == 0) {
-                this->recycler->setDataSource(new VideoDataSource(r.Items));
-                brls::Application::giveFocus(this->recycler);
+            if (generation != this->requestGeneration) return;
+            this->loading = false;
+            this->startIndex = r.StartIndex + page;
+            this->hasMore = !r.Items.empty();
+            if (r.StartIndex == 0) {
+                if (r.Items.empty()) this->recycler->setEmpty();
+                else {
+                    this->recycler->setDataSource(new VideoDataSource(r.Items));
+                    brls::Application::giveFocus(this->recycler);
+                }
             } else if (r.Items.size() > 0) {
                 auto dataSrc = dynamic_cast<VideoDataSource*>(this->recycler->getDataSource());
                 if (dataSrc) {
-                    dataSrc->appendData(r.Items);
-                    this->recycler->notifyDataChanged();
+                    this->hasMore = dataSrc->appendData(r.Items) > 0;
+                    if (this->hasMore) this->recycler->notifyDataChanged();
                 }
             }
         },
-        [ASYNC_TOKEN](const std::string& ex) {
+        [ASYNC_TOKEN, generation](const std::string& ex) {
             ASYNC_RELEASE
+            if (generation != this->requestGeneration) return;
+            this->loading = false;
             if (this->startIndex > 0) {
                 brls::Application::notify(ex);
             } else {

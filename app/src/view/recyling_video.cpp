@@ -64,29 +64,40 @@ void RecylingVideo::onQuery(const Callback& callback) { this->queryCallback = ca
 void RecylingVideo::onFetch(const Fetch& callback) { this->fetchCallback = callback; }
 
 void RecylingVideo::doRequest(bool refresh) {
-    if (refresh) this->start = 0;
     if (this->fetchCallback) {
+        if (refresh) this->reset();
+        if (this->loading || !this->hasMore) return;
+        this->loading = true;
+        const auto generation = this->requestGeneration;
         ASYNC_RETAIN
         auto fetch = this->fetchCallback;
         auto startIndex = this->start;
-        auto page = this->pageSize;
+        auto page = this->pageSize ? this->pageSize : 12;
         fntv::async<jellyfin::Result<jellyfin::Episode>>(
             [fetch, startIndex, page] { return fetch(startIndex, page); },
-            [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
+            [ASYNC_TOKEN, generation, page](const jellyfin::Result<jellyfin::Episode>& r) {
                 ASYNC_RELEASE
-                this->start = r.StartIndex + this->pageSize;
+                if (generation != this->requestGeneration) return;
+                this->loading = false;
+                this->hasMore = !r.Items.empty();
+                this->start = r.StartIndex + page;
                 if (r.StartIndex == 0) {
                     this->recycler->setDataSource(new VideoDataSource(r.Items));
+                    this->title->setSubtitle(r.Items.empty() ? "暂无媒体" :
+                        (r.TotalRecordCount >= 0 ? std::to_string(r.TotalRecordCount) : ""));
                 } else if (!r.Items.empty()) {
                     auto dataSrc = dynamic_cast<VideoDataSource*>(this->recycler->getDataSource());
                     if (dataSrc) {
-                        dataSrc->appendData(r.Items);
-                        this->recycler->notifyDataChanged();
+                        this->hasMore = dataSrc->appendData(r.Items) > 0;
+                        if (this->hasMore) this->recycler->notifyDataChanged();
                     }
                 }
             },
-            [ASYNC_TOKEN](const std::string& ex) {
+            [ASYNC_TOKEN, generation](const std::string& ex) {
                 ASYNC_RELEASE
+                if (generation != this->requestGeneration) return;
+                this->loading = false;
+                this->title->setSubtitle(ex);
                 brls::Logger::warning("RecylingVideo {}", ex);
             });
         return;

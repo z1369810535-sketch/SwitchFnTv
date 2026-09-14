@@ -4,7 +4,22 @@ on:
   workflow_dispatch:
 
 jobs:
+  test-catalog:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+    - name: Test Feiniu catalog compatibility
+      run: |
+        mkdir -p build-tests
+        g++ -std=c++17 -pthread -Itests/stubs -Iapp/include \
+          -Ilibrary/borealis/library/include/borealis/extern \
+          tests/fntv_catalog_test.cpp app/src/api/fntv.cpp -o build-tests/fntv_catalog_test
+        ./build-tests/fntv_catalog_test
+
   build-nx:
+    needs: test-catalog
     runs-on: ubuntu-latest
     container:
       image: devkitpro/devkita64:20260219
@@ -41,3 +56,4 @@ jobs:
       with:
         name: SwitchFnTv-NintendoSwitch-deko3d
         path: build/SwitchFnTv.nro
+        if-no-files-found: error

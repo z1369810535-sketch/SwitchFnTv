@@ -50,11 +50,8 @@ void HomeTab::onCreate() {
                 recyler->setItemWidth(175);
                 recyler->setPageSize(12);
                 std::string itemId = item.Id;
-                std::string type;
-                if (item.CollectionType == "movies") type = jellyfin::mediaTypeMovie;
-                else if (item.CollectionType == "tvshows") type = jellyfin::mediaTypeSeries;
-                recyler->onFetch([itemId, type](size_t start, size_t pageSize) {
-                    return fntv::listItems(itemId, start, pageSize, type);
+                recyler->onFetch([itemId](size_t start, size_t pageSize) {
+                    return fntv::listItems(itemId, start, pageSize);
                 });
                 recyler->doRequest();
                 this->latest.push_back(recyler);

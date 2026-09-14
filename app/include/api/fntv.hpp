@@ -63,6 +63,7 @@ jellyfin::Result<jellyfin::Episode> listItems(const std::string& parentGuid, siz
 jellyfin::Detail getDetail(const std::string& guid);
 jellyfin::Result<jellyfin::Episode> listSeasons(const std::string& seriesGuid);
 jellyfin::Result<jellyfin::Episode> listEpisodes(const std::string& guid);
+jellyfin::Result<jellyfin::Episode> listSeriesEpisodes(const std::string& seriesGuid);
 PlaySession preparePlay(const std::string& itemGuid);
 void loadPoster(brls::Image* view, const jellyfin::Item& item);
 void loadImagePath(brls::Image* view, const std::string& path);

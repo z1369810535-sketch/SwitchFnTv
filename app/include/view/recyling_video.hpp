@@ -19,7 +19,12 @@ public:
     using Callback = std::function<std::string(size_t, size_t)>;
     using Fetch = std::function<jellyfin::Result<jellyfin::Episode>(size_t, size_t)>;
 
-    void reset() { this->start = 0; }
+    void reset() {
+        this->start = 0;
+        this->loading = false;
+        this->hasMore = true;
+        ++this->requestGeneration;
+    }
     void setTitle(const std::string& text);
     void setFrameHeight(float height);
     void setItemWidth(float width);
@@ -38,4 +43,7 @@ private:
     Fetch fetchCallback = nullptr;
     size_t start = 0;
     size_t pageSize = 10;
+    size_t requestGeneration = 0;
+    bool loading = false;
+    bool hasMore = true;
 };

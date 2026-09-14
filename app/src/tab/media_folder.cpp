@@ -53,14 +53,10 @@ public:
     RecyclingGridItem* cellForRow(RecyclingView* recycler, size_t index) override {
         MediaFolderCell* cell = dynamic_cast<MediaFolderCell*>(recycler->dequeueReusableCell("Cell"));
         auto& item = this->list.at(index);
-        fntv::loadPoster(cell->picture, item);
+        if (!item.ImageTags.empty()) fntv::loadPoster(cell->picture, item);
         cell->picture->setVisibility(brls::Visibility::VISIBLE);
-        if (item.ImageTags.find(jellyfin::imageTypePrimary) != item.ImageTags.end()) {
-            cell->labelTitle->setVisibility(brls::Visibility::GONE);
-        } else {
-            cell->labelTitle->setText(item.Name);
-            cell->labelTitle->setVisibility(brls::Visibility::VISIBLE);
-        }
+        cell->labelTitle->setText(item.Name);
+        cell->labelTitle->setVisibility(brls::Visibility::VISIBLE);
         return cell;
     }
 
@@ -68,10 +64,8 @@ public:
         auto& item = this->list.at(index);
         brls::View* view = nullptr;
 
-        if (item.CollectionType == "tvshows")
-            view = new MediaCollection(item.Id, jellyfin::mediaTypeSeries);
-        else if (item.CollectionType == "movies")
-            view = new MediaCollection(item.Id, jellyfin::mediaTypeMovie);
+        if (item.CollectionType == "tvshows" || item.CollectionType == "movies")
+            view = new MediaCollection(item.Id);
         else if (item.CollectionType == "music")
             view = new MediaCollection(item.Id, jellyfin::mediaTypeMusicAlbum);
         else if (item.CollectionType == "books")
