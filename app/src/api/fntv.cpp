@@ -2,6 +2,9 @@
 #include "utils/config.hpp"
 #include "utils/image.hpp"
 #include "utils/misc.hpp"
+#include "utils/playback_history.hpp"
+#include <memory>
+#include <cmath>
 
 #include <cctype>
 #include <algorithm>
@@ -52,6 +55,20 @@ std::string dumpBody(const nlohmann::json& body) {
 
 std::mutex rngMutex;
 std::mt19937 rng{static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count())};
+
+std::string historyFile() {
+    auto& c = AppConfig::instance();
+    return c.configDir() + "/playback/" + md5Hex(normalizeBaseUrl(c.getUrl()) + "\n" + c.getUserId()) + ".json";
+}
+
+std::shared_ptr<PlaybackHistory> history(const std::string& file) {
+    static std::mutex mutex;
+    static std::map<std::string, std::shared_ptr<PlaybackHistory>> stores;
+    std::lock_guard<std::mutex> lock(mutex);
+    auto& store = stores[file];
+    if (!store) store = std::make_shared<PlaybackHistory>(file);
+    return store;
+}
 
 std::string randomNonce() {
     std::uniform_int_distribution<int> dist(100000, 999999);
@@ -147,13 +164,14 @@ std::string jsonString(const nlohmann::json& j, std::initializer_list<const char
             auto s = j[key].get<std::string>();
             if (!s.empty()) return s;
         }
-        if (j.contains(key) && j[key].is_number()) return std::to_string(static_cast<long long>(j[key].get<double>()));
+        if (j.contains(key) && j[key].is_number()) return j[key].dump();
     }
     return fallback;
 }
 
 int jsonInt(const nlohmann::json& j, const char* key, int fallback = 0) {
     if (!j.is_object() || !j.contains(key) || j[key].is_null()) return fallback;
+    if (j[key].is_boolean()) return j[key].get<bool>() ? 1 : 0;
     if (j[key].is_number_integer()) return j[key].get<int>();
     if (j[key].is_number()) return static_cast<int>(j[key].get<double>());
     if (j[key].is_string()) {
@@ -168,7 +186,7 @@ int jsonInt(const nlohmann::json& j, const char* key, int fallback = 0) {
 
 std::string firstImagePath(const nlohmann::json& j) {
     static const char* keys[] = {
-        "poster", "posters", "still_path", "poster_path", "backdrop", "profile_path", "avatar", "cover"};
+        "poster", "posters", "still_path", "poster_path", "backdrop", "backdrops", "profile", "profiles", "profile_path", "avatar", "cover"};
     if (!j.is_object()) return "";
     for (auto key : keys) {
         if (!j.contains(key)) continue;
@@ -319,8 +337,12 @@ std::vector<jellyfin::MediaPeople> fetchPeople(const std::string& itemGuid) {
 void fillUserData(jellyfin::UserDataResult& u, const nlohmann::json& j, uint64_t runtimeTicks) {
     u.IsFavorite = jsonInt(j, "is_favorite", 0) != 0;
     u.Played = jsonInt(j, "is_watched", jsonInt(j, "watched", 0)) != 0;
-    const int64_t ts = jsonLong(j, "watched_ts", 0);
-    if (ts > 0) u.PlaybackPositionTicks = static_cast<uint64_t>(ts) * jellyfin::PLAYTICKS;
+    int64_t ts = std::max(0L, jsonLong(j, "ts", jsonLong(j, "watched_ts", 0)));
+    ts = std::min<int64_t>(ts, runtimeTicks > 0 ? runtimeTicks / jellyfin::PLAYTICKS : 31536000);
+    if (ts > 0) {
+        u.PlaybackPositionTicks = static_cast<uint64_t>(ts) * jellyfin::PLAYTICKS;
+        u.Played = false;  // A watched item may currently be replayed.
+    }
     if (runtimeTicks > 0 && ts > 0) {
         u.PlayedPercentage = 100.0f * static_cast<float>(ts) / static_cast<float>(runtimeTicks / jellyfin::PLAYTICKS);
     }
@@ -330,6 +352,7 @@ std::string requestOnce(const std::string& method, const std::string& url, const
     long timeoutMs) {
     HTTP::Timeout timeout{timeoutMs};
     if (method == "GET" || method == "get") return HTTP::get(url, header, timeout);
+    if (method == "PUT" || method == "DELETE") return HTTP::request(method, url, body, header, timeout);
     return HTTP::post(url, body, header, timeout);
 }
 
@@ -430,8 +453,8 @@ std::string requestRaw(const std::string& method, const std::string& path, nlohm
             const std::string resp = requestOnce(method, base + path, bodyStr, header, timeoutMs);
             auto parsed = nlohmann::json::parse(resp, nullptr, false);
             if (parsed.is_discarded()) return resp;
-            const int code = parsed.value("code", 0);
-            const std::string msg = parsed.value("msg", std::string());
+            const int code = jsonInt(parsed, "code", 0);
+            const std::string msg = jsonString(parsed, {"msg", "message"});
             if (code == 5000 && msg == "invalid sign") {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
@@ -547,13 +570,21 @@ jellyfin::Detail mapDetail(const nlohmann::json& j) {
     d.Type = ep.Type;
     d.ImageTags = ep.ImageTags;
     d.ProductionYear = ep.ProductionYear;
+    d.RunTimeTicks = ep.RunTimeTicks;
+    d.OriginalTitle = jsonString(j, {"original_title", "original_name"});
+    for (auto key : {"backdrops", "backdrop", "backdrop_path"}) {
+        if (!j.contains(key)) continue;
+        auto path = firstImagePath(nlohmann::json{{"poster", j[key]}});
+        if (!path.empty()) { d.BackdropImageTags.push_back(path); break; }
+    }
     d.Overview = ep.Overview;
     d.UserData = ep.UserData;
     d.CommunityRating = 0.f;
     auto rating = jsonString(j, {"vote_average", "rating"});
     if (!rating.empty()) {
         try {
-            d.CommunityRating = std::stof(rating);
+            const float value = std::stof(rating);
+            if (std::isfinite(value) && value >= 0 && value <= 10) d.CommunityRating = value;
         } catch (...) {
         }
     } else if (j.contains("vote_average") && j["vote_average"].is_number()) {
@@ -686,11 +717,15 @@ jellyfin::Detail getDetail(const std::string& guid) {
         auto data = requestJson("GET", std::string("/v/api/v1/item/") + guid);
         if (data.is_object() && data.contains("item") && data["item"].is_object()) d = mapDetail(data["item"]);
         else d = mapDetail(data);
+        if (d.Id.empty() || d.Name.empty()) throw std::runtime_error("详情数据不完整");
     } catch (...) {
         auto info = requestJson("POST", "/v/api/v1/play/info", nlohmann::json{{"item_guid", guid}});
         if (info.contains("item") && info["item"].is_object()) d = mapDetail(info["item"]);
         else d = mapDetail(info);
     }
+    if (d.Id.empty()) d.Id = guid;
+    if (d.Name.empty()) throw std::runtime_error("未返回影片详情，请刷新重试");
+    applyLocalProgress(d);
     if (d.People.empty()) {
         try {
             d.People = fetchPeople(guid);
@@ -834,6 +869,99 @@ jellyfin::Result<jellyfin::Episode> listSeriesEpisodes(const std::string& series
     return r;
 }
 
+void applyLocalProgress(jellyfin::Item& item) {
+    const auto saved = history(historyFile())->get(item.Id);
+    if (!saved) return;
+    item.UserData.PlaybackPositionTicks = saved->item.UserData.PlaybackPositionTicks;
+    item.UserData.Played = saved->item.UserData.Played;
+    item.UserData.PlayedPercentage = saved->item.UserData.PlayedPercentage;
+}
+
+size_t selectResumeEpisode(const std::vector<jellyfin::Episode>& items) {
+    if (items.empty()) return 0;
+    // Records are ordered by last activity, including a deliberate rewind/replay.
+    for (const auto& saved : history(historyFile())->records()) {
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (items[i].Id != saved.item.Id) continue;
+            if (!saved.item.UserData.Played) return i;
+            if (i + 1 < items.size()) return i + 1;
+            return 0;
+        }
+    }
+    for (size_t i = 0; i < items.size(); ++i)
+        if (items[i].UserData.PlaybackPositionTicks > 0 && !items[i].UserData.Played) return i;
+    for (size_t i = 0; i < items.size(); ++i) if (!items[i].UserData.Played) return i;
+    return 0;
+}
+
+void savePlaybackProgress(const PlaySession& session, double seconds, double duration, bool completed) {
+    if (session.item_guid.empty() || session.history_file.empty()) return;
+    auto store = history(session.history_file);
+    int64_t revision = 0;
+    try {
+        revision = store->save(session.item, seconds, duration, completed);
+    } catch (const std::exception& ex) {
+        brls::Logger::warning("playback history: {}", ex.what());
+        return;
+    }
+    if (!revision || session.token.empty() || session.media_guid.empty()) return;
+    // Capture the account and session, never the PlayerView that may already be destroyed.
+    brls::async([store, session, revision, completed]() {
+        static std::mutex uploadMutex;
+        std::lock_guard<std::mutex> lock(uploadMutex);
+        const auto saved = store->get(session.item_guid);
+        if (!saved || saved->revision != revision) return;
+        try {
+            nlohmann::json payload = {{"item_guid", session.item_guid}, {"media_guid", session.media_guid},
+                {"video_guid", session.video_guid}, {"audio_guid", session.audio_guid},
+                {"subtitle_guid", session.subtitle_guid}, {"play_link", session.direct_url.empty() ? session.fallback_url : session.direct_url},
+                {"ts", completed ? int64_t(0) : std::max<int64_t>(1, saved->item.UserData.PlaybackPositionTicks / jellyfin::PLAYTICKS)},
+                {"duration", saved->item.RunTimeTicks / jellyfin::PLAYTICKS}};
+            requestJson("POST", "/v/api/v1/play/record", payload, session.base_url, session.token, 3000);
+            store->acknowledge(session.item_guid, revision);
+        } catch (...) {
+            // Keep the pending local record authoritative while the NAS is offline.
+            brls::Logger::warning("Playback sync failed; progress is saved locally");
+        }
+    });
+}
+
+jellyfin::Result<jellyfin::Episode> listResume(size_t start, size_t pageSize) {
+    const auto store = history(historyFile());
+    std::vector<jellyfin::Episode> merged;
+    std::unordered_set<std::string> seen;
+    try {
+        const auto rows = listArray(requestJson("GET", "/v/api/v1/play/list"));
+        for (const auto& row : rows) {
+            auto item = mapItem(row.contains("item") && row["item"].is_object() ? row["item"] : row);
+            if (row.contains("ts")) {
+                const auto state = mapItem(nlohmann::json{{"ts", row["ts"]}, {"duration", item.RunTimeTicks / jellyfin::PLAYTICKS}});
+                item.UserData.PlaybackPositionTicks = state.UserData.PlaybackPositionTicks;
+                item.UserData.PlayedPercentage = state.UserData.PlayedPercentage;
+                if (item.UserData.PlaybackPositionTicks > 0) item.UserData.Played = false;
+            }
+            if (item.Id.empty() || !seen.insert(item.Id).second) continue;
+            const auto saved = store->get(item.Id);
+            if (saved && (saved->pending || saved->item.UserData.Played)) item.UserData = saved->item.UserData;
+            if (item.UserData.PlaybackPositionTicks > 0 && !item.UserData.Played) merged.push_back(item);
+        }
+    } catch (...) { brls::Logger::warning("Using local continue-watching history"); }
+    for (const auto& saved : store->records()) {
+        if (seen.count(saved.item.Id) || saved.item.UserData.Played || saved.item.UserData.PlaybackPositionTicks <= 0) continue;
+        merged.push_back(saved.item);
+    }
+    jellyfin::Result<jellyfin::Episode> result;
+    result.StartIndex = start;
+    result.TotalRecordCount = merged.size();
+    if (start < merged.size()) result.Items.assign(merged.begin() + start, merged.begin() + start + std::min(pageSize, merged.size() - start));
+    return result;
+}
+
+bool setFavorite(const std::string& guid, bool favorite) {
+    requestJson(favorite ? "PUT" : "DELETE", "/v/api/v1/item/favorite", {{"item_guid", guid}});
+    return favorite;
+}
+
 std::string subtitleCacheDir() { return AppConfig::instance().configDir() + "/subtitles"; }
 
 void cleanupSubtitles() {
@@ -879,8 +1007,19 @@ static void appendStream(jellyfin::Source& source, const nlohmann::json& s, cons
 }
 
 PlaySession preparePlay(const std::string& itemGuid) {
-    auto info = requestJson("POST", "/v/api/v1/play/info", nlohmann::json{{"item_guid", itemGuid}});
     PlaySession session;
+    session.base_url = currentBase("");
+    session.token = currentToken("");
+    session.history_file = historyFile();
+    auto info = requestJson("POST", "/v/api/v1/play/info", nlohmann::json{{"item_guid", itemGuid}}, session.base_url, session.token);
+    session.item = mapItem(info.contains("item") && info["item"].is_object() ? info["item"] : info);
+    session.item.Id = itemGuid;
+    const auto rootTs = jsonLong(info, "ts", -1);
+    session.resume_ticks = rootTs >= 0 ? std::min<int64_t>(rootTs, 31536000) * jellyfin::PLAYTICKS : session.item.UserData.PlaybackPositionTicks;
+    const auto saved = history(session.history_file)->get(itemGuid);
+    if (saved && (saved->pending || (rootTs < 0 && session.resume_ticks == 0)))
+        session.resume_ticks = saved->item.UserData.PlaybackPositionTicks;
+    if (session.item.RunTimeTicks > 0) session.resume_ticks = std::min<int64_t>(session.resume_ticks, session.item.RunTimeTicks);
     session.item_guid = itemGuid;
     session.media_guid = jsonString(info, {"media_guid"});
     session.video_guid = jsonString(info, {"video_guid"});
@@ -888,7 +1027,7 @@ PlaySession preparePlay(const std::string& itemGuid) {
     session.subtitle_guid = jsonString(info, {"subtitle_guid"});
     session.title = jsonString(info.contains("item") ? info["item"] : info, {"title", "tv_title", "name"});
     if (session.media_guid.empty()) throw std::runtime_error("未返回 media_guid，无法播放");
-    const std::string base = currentBase("");
+    const std::string base = session.base_url;
     session.direct_url = base + "/v/api/v1/media/range/" + session.media_guid;
     session.source.Id = session.media_guid;
     session.source.Name = session.title;
@@ -896,7 +1035,7 @@ PlaySession preparePlay(const std::string& itemGuid) {
     session.source.SupportsTranscoding = true;
 
     try {
-        auto streams = requestJson("GET", std::string("/v/api/v1/stream/list/") + itemGuid);
+        auto streams = requestJson("GET", std::string("/v/api/v1/stream/list/") + itemGuid, nullptr, base, session.token);
         if (streams.contains("video_streams"))
             for (auto& s : streams["video_streams"]) appendStream(session.source, s, jellyfin::streamTypeVideo, false);
         if (streams.contains("audio_streams"))
@@ -933,7 +1072,7 @@ PlaySession preparePlay(const std::string& itemGuid) {
             {"media_guid", session.media_guid},
             {"ip", ""},
         };
-        auto stream = requestJson("POST", "/v/api/v1/stream", req);
+        auto stream = requestJson("POST", "/v/api/v1/stream", req, base, session.token);
         if (stream.contains("direct_link_qualities") && stream["direct_link_qualities"].is_array()) {
             for (auto& q : stream["direct_link_qualities"]) {
                 auto url = jsonString(q, {"url", "link"});

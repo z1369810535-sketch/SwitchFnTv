@@ -13,8 +13,8 @@
 
 using namespace brls::literals;
 
-PlayerView::PlayerView(const jellyfin::Item& item, const uint64_t seekTicks, const std::string& sourceId)
-    : itemId(item.Id) {
+PlayerView::PlayerView(const jellyfin::Item& item, const int64_t seekTicks, const std::string& sourceId)
+    : itemId(item.Id), currentItem(item) {
     float width = brls::Application::contentWidth;
     float height = brls::Application::contentHeight;
     view = new VideoView();
@@ -52,9 +52,17 @@ PlayerView::PlayerView(const jellyfin::Item& item, const uint64_t seekTicks, con
             this->reportStart();
             break;
         case MpvEventEnum::MPV_STOP:
+        case MpvEventEnum::RESET:
             this->reportStop();
             break;
+        case MpvEventEnum::PLAYBACK_EOF:
+            if (recordReady && reachedStart) {
+                fntv::savePlaybackProgress(activeSession, mpv.playback_time, mpv.duration, true);
+            }
+            recordReady = false;
+            break;
         case MpvEventEnum::MPV_LOADED: {
+            recordReady = !activeSession.item_guid.empty();
             const char* flag = MPVCore::SUBS_FALLBACK ? "select" : "auto";
             for (auto& s : this->stream.MediaStreams) {
                 if (s.Type == jellyfin::streamTypeSubtitle && s.IsExternal && !s.DeliveryUrl.empty()) {
@@ -67,7 +75,7 @@ PlayerView::PlayerView(const jellyfin::Item& item, const uint64_t seekTicks, con
             break;
         }
         case MpvEventEnum::UPDATE_PROGRESS:
-            if (mpv.video_progress % 10 == 0) this->reportPlay();
+            this->reportPlay();
             break;
         default:;
         }
@@ -90,15 +98,16 @@ PlayerView::PlayerView(const jellyfin::Item& item, const uint64_t seekTicks, con
     }
 
     this->setChapters(item.Chapters, item.RunTimeTicks);
-    this->playMedia(seekTicks > 0 ? seekTicks : item.UserData.PlaybackPositionTicks);
+    this->playMedia(seekTicks);
 
     // Report stop when application exit
     this->exitSubscribeID = brls::Application::getExitEvent()->subscribe([this]() {
-        if (!MPVCore::instance().isStopped()) this->reportStop();
+        this->reportStop();
     });
 }
 
 PlayerView::~PlayerView() {
+    this->reportStop();
     auto& mpv = MPVCore::instance();
     mpv.getEvent()->unsubscribe(eventSubscribeID);
     mpv.getCustomEvent()->unsubscribe(customEventSubscribeID);
@@ -114,13 +123,14 @@ PlayerView::~PlayerView() {
     PlayerSetting::selectedSubtitle = 0;
     PlayerSetting::selectedAudio = 0;
 
-    if (!mpv.isStopped()) this->reportStop();
     brls::Application::getExitEvent()->unsubscribe(this->exitSubscribeID);
     fntv::cleanupSubtitles();
     brls::Logger::debug("trying delete PlayerView...");
 }
 
 void PlayerView::setSeries(const std::string& seriesId) {
+    this->seriesId = seriesId;
+    activeSession.item.SeriesId = seriesId;
     ASYNC_RETAIN
     fntv::async<jellyfin::Result<jellyfin::Episode>>(
         [seriesId] { return fntv::listSeriesEpisodes(seriesId); },
@@ -152,24 +162,37 @@ bool PlayerView::playIndex(int index) {
     if (index < 0 || index >= (int)this->episodes.size()) {
         return VideoView::close();
     }
-    MPVCore::instance().reset();
+    this->reportStop();
 
     auto item = this->episodes.at(index);
     this->itemId = item.Id;
+    this->currentItem = item;
     this->sourceId = item.Id;
     this->setChapters(item.Chapters, item.RunTimeTicks);
-    this->playMedia(0);
+    this->playMedia(-1);
     view->setTitie(fmt::format("S{}E{} - {}", item.ParentIndexNumber, item.IndexNumber, item.Name));
     return true;
 }
 
-void PlayerView::playMedia(const uint64_t seekTicks) {
+void PlayerView::playMedia(const int64_t seekTicks) {
+    this->reportStop();
+    MPVCore::instance().reset();
+    const auto generation = ++requestGeneration;
+    const auto requestedId = itemId;
+    activeSession = {};
+    reachedStart = false;
     ASYNC_RETAIN
     fntv::async<fntv::PlaySession>(
-        [this] { return fntv::preparePlay(this->itemId); },
-        [ASYNC_TOKEN, seekTicks](const fntv::PlaySession& session) {
+        [requestedId] { return fntv::preparePlay(requestedId); },
+        [ASYNC_TOKEN, seekTicks, generation](const fntv::PlaySession& session) {
             ASYNC_RELEASE
+            if (generation != requestGeneration) return;
             auto& mpv = MPVCore::instance();
+            activeSession = session;
+            if (activeSession.item.Name.empty()) activeSession.item.Name = currentItem.Name;
+            if (!seriesId.empty()) activeSession.item.SeriesId = seriesId;
+            const auto startTicks = seekTicks >= 0 ? seekTicks : session.resume_ticks;
+            requestedStart = static_cast<double>(startTicks) / jellyfin::PLAYTICKS;
             this->stream = session.source;
             this->sourceId = session.media_guid;
             this->playMethod = jellyfin::methodDirectPlay;
@@ -177,8 +200,8 @@ void PlayerView::playMedia(const uint64_t seekTicks) {
 
             std::stringstream ssextra;
             ssextra << fmt::format("network-timeout={}", HTTP::TIMEOUT / 100);
-            if (seekTicks > 0) ssextra << ",start=" << misc::sec2Time(seekTicks / jellyfin::PLAYTICKS);
-            const std::string token = AppConfig::instance().getToken();
+            if (startTicks > 0) ssextra << ",start=" << misc::sec2Time(startTicks / jellyfin::PLAYTICKS);
+            const std::string token = session.token;
             std::string headers = "Authorization: " + token;
             if (!session.cookie_header.empty()) headers += "\r\nCookie: " + session.cookie_header;
             ssextra << ",http-header-fields=\"" << headers << "\"";
@@ -187,23 +210,40 @@ void PlayerView::playMedia(const uint64_t seekTicks) {
             std::string url = session.direct_url;
             if (url.empty()) url = session.fallback_url;
             if (url.empty()) {
-                Dialog::show("?????????", []() { VideoView::close(); });
+                Dialog::show("未返回可用的播放地址", []() { VideoView::close(); });
                 return;
             }
             this->stream.TranscodingUrl = session.fallback_url;
             mpv.setUrl(url, ssextra.str());
         },
-        [ASYNC_TOKEN](const std::string& ex) {
+        [ASYNC_TOKEN, generation](const std::string& ex) {
             ASYNC_RELEASE
+            if (generation != requestGeneration) return;
             Dialog::show(ex, []() { VideoView::close(); });
         });
 }
 
-void PlayerView::reportStart() {}
+void PlayerView::reportStart() { this->reportPlay(); }
 
-void PlayerView::reportStop() {}
+void PlayerView::reportStop() {
+    this->reportPlay(true);
+    recordReady = false;
+}
 
-void PlayerView::reportPlay(bool isPaused) { (void)isPaused; }
+void PlayerView::reportPlay(bool isPaused) {
+    if (!recordReady) return;
+    const auto& mpv = MPVCore::instance();
+    // Initial zero-valued mpv events must not erase a resume point before seeking.
+    if (!reachedStart) {
+        if (mpv.playback_time <= 0 || mpv.playback_time + 3 < requestedStart) return;
+        reachedStart = true;
+        lastReport = {};
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (!isPaused && now - lastReport < std::chrono::seconds(10)) return;
+    lastReport = now;
+    fntv::savePlaybackProgress(activeSession, mpv.playback_time, mpv.duration);
+}
 
 void PlayerView::requestDanmaku() {
     ASYNC_RETAIN

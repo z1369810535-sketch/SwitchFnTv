@@ -49,6 +49,16 @@ Do not invent a download link if Actions has not produced an artifact.
 
 Included: server address, username/password software keyboard, movie/series browse, episode pick, play/pause/seek, audio tracks, embedded subs, Feiniu external SRT/ASS/SSA, readable errors.
 
-Not included: NAS OAuth/QR, live TV, danmaku, online subtitle search, full-file download, NAS management, watch-progress sync.
+Not included: NAS OAuth/QR, live TV, danmaku, online subtitle search, full-file download, NAS management.
+
+## 0.1.1 compatibility and resume
+
+- Reads both numeric and string playback positions from Feiniu `play/info`, and accepts nullable metadata, boolean flags, decimal ratings, backdrops and cast profile images used by 0.9.7-4.
+- Saves progress locally every 10 seconds and on pause, episode changes, normal exit and completion. Records are isolated by server and user under the existing configuration directory's `playback/` folder, with a backup file for interrupted writes. Stream URLs and credentials are excluded.
+- Sends progress to the native `play/record` endpoint. Failed uploads keep the local record available for the next playback; reconnecting and playing retries synchronization. Abrupt power loss may lose the last checkpoint interval.
+- The home page shows continue-watching entries. A show's play button resumes the last episode or advances after completion. Movie details offer separate continue and restart actions. Press Y to refresh details; select the synopsis to open it.
+- Favorites now use Feiniu's PUT/DELETE API. Unsupported download actions remain hidden.
+
+Regression checks compile the production API/history implementation with a fake HTTP transport; GitHub Actions also compiles the complete Switch app. Real NAS login, playback seeking, controller layout and progress synchronization still require verification on the user's Switch; no authenticated NAS responses are part of the tests.
 
 Playback target: handheld 720p, dock max 1080p, SDR output. HDR sources use tone mapping. Direct play uses `/v/api/v1/media/range/{mediaGuid}` with the real URL/headers; existing Feiniu HLS/transcode is fallback only. No extra NAS containers.

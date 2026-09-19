@@ -84,7 +84,7 @@
 
                     <brls:Label
                         id="series/label/title"
-                        fontSize="42"
+                        fontSize="34"
                         marginBottom="14" />
 
                     <brls:Box
@@ -165,6 +165,7 @@
 
                         <IconButton
                             id="series/download"
+                            visibility="gone"
                             icon="@res/icon/ico-download-light.svg"
                             text="@i18n/main/download/start"
                             buttonStyle="bordered"
@@ -178,9 +179,11 @@
                             marginLeft="12" />
                     </brls:Box>
 
+                    <brls:Label id="series/status" fontSize="16" marginBottom="12" textColor="@theme/font/grey" />
+
                     <TextBox
                         id="series/label/overview"
-                        fontSize="15"
+                        fontSize="18"
                         textColor="@theme/font/grey" />
 
                 </brls:Box>

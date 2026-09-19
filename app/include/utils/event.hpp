@@ -14,6 +14,7 @@ typedef enum MpvEventEnum {
     UPDATE_DURATION,
     UPDATE_PROGRESS,
     START_FILE,
+    PLAYBACK_EOF,  // Persist completion before VideoView advances the playlist.
     END_OF_FILE,
     CACHE_SPEED_CHANGE,
     VIDEO_SPEED_CHANGE,

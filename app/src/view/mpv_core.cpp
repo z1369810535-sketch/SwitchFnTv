@@ -593,6 +593,7 @@ void MPVCore::eventMainLoop() {
                 mpvCoreEvent.fire(MpvEventEnum::MPV_FILE_ERROR);
             } else if (node->reason == MPV_END_FILE_REASON_EOF) {
                 brls::Logger::info("MPVCore => END_OF_FILE");
+                mpvCoreEvent.fire(MpvEventEnum::PLAYBACK_EOF);
                 mpvCoreEvent.fire(MpvEventEnum::END_OF_FILE);
             } else {
                 brls::Logger::info("MPVCore => STOP");
@@ -697,7 +698,7 @@ void MPVCore::reset() {
 }
 
 void MPVCore::setUrl(const std::string &url, const std::string &extra, const std::string &method, uint64_t userdata) {
-    brls::Logger::debug("MPVCore {} ({}) extra: ({})", method, url, extra);
+    brls::Logger::debug("MPVCore loadfile ({})", method);
     if (mpv_client_api_version() >= MPV_MAKE_VERSION(2, 3)) {
         const char *cmd[] = {"loadfile", url.c_str(), method.c_str(), "0", extra.c_str(), nullptr};
         mpv_command_async(this->mpv, userdata, cmd);

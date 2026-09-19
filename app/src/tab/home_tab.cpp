@@ -12,7 +12,7 @@ using namespace brls::literals;
 HomeTab::HomeTab() {
     brls::Logger::debug("Tab HomeTab: create");
     this->inflateFromXMLRes("xml/tabs/home.xml");
-    this->userResume->setVisibility(brls::Visibility::GONE);
+    this->userResume->onFetch([](size_t start, size_t pageSize) { return fntv::listResume(start, pageSize); });
     this->showNextup->setVisibility(brls::Visibility::GONE);
 }
 
@@ -21,10 +21,12 @@ HomeTab::~HomeTab() { brls::Logger::debug("View HomeTab: delete"); }
 brls::View* HomeTab::create() { return new HomeTab(); }
 
 void HomeTab::doRequest() {
+    this->userResume->doRequest(true);
     for (auto recyler : this->latest) recyler->doRequest(true);
 }
 
 void HomeTab::onCreate() {
+    this->userResume->doRequest(true);
     auto actionRefresh = [this](brls::View* view) {
         this->doRequest();
         return true;

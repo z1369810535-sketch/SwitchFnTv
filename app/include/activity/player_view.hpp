@@ -7,12 +7,14 @@
 #include <borealis.hpp>
 #include <utils/event.hpp>
 #include <api/jellyfin/media.hpp>
+#include <api/fntv.hpp>
+#include <chrono>
 
 class VideoView;
 
 class PlayerView : public brls::Box {
 public:
-    PlayerView(const jellyfin::Item& item, const uint64_t seekTicks = 0, const std::string& = "");
+    PlayerView(const jellyfin::Item& item, const int64_t seekTicks = -1, const std::string& = "");
     ~PlayerView();
 
     void setSeries(const std::string& seriesId);
@@ -34,7 +36,7 @@ public:
 private:
     void setChapters(const std::vector<jellyfin::MediaChapter>& chaps, uint64_t duration);
     /// @brief get video url
-    void playMedia(const uint64_t seekTicks);
+    void playMedia(const int64_t seekTicks);
     bool playIndex(int index);
     void reportStart();
     void reportStop();
@@ -44,6 +46,14 @@ private:
 
     // Playinfo
     std::string itemId;
+    std::string seriesId;
+    jellyfin::Item currentItem;
+    fntv::PlaySession activeSession;
+    uint64_t requestGeneration = 0;
+    bool recordReady = false;
+    bool reachedStart = false;
+    double requestedStart = 0;
+    std::chrono::steady_clock::time_point lastReport{};
     std::string sourceId;
     /// @brief DirectPlay, Transcode
     std::string playMethod;

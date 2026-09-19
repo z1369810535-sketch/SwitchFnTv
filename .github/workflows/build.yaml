@@ -12,11 +12,16 @@ jobs:
         submodules: recursive
     - name: Test Feiniu catalog compatibility
       run: |
+        python3 tests/detail_bindings_test.py
         mkdir -p build-tests
         g++ -std=c++17 -pthread -Itests/stubs -Iapp/include \
           -Ilibrary/borealis/library/include/borealis/extern \
-          tests/fntv_catalog_test.cpp app/src/api/fntv.cpp -o build-tests/fntv_catalog_test
+          tests/fntv_catalog_test.cpp app/src/api/fntv.cpp app/src/utils/playback_history.cpp -o build-tests/fntv_catalog_test
         ./build-tests/fntv_catalog_test
+        g++ -std=c++17 -pthread -Itests/stubs -Iapp/include \
+          -Ilibrary/borealis/library/include/borealis/extern \
+          tests/fntv_playback_test.cpp app/src/api/fntv.cpp app/src/utils/playback_history.cpp -o build-tests/fntv_playback_test
+        ./build-tests/fntv_playback_test
 
   build-nx:
     needs: test-catalog

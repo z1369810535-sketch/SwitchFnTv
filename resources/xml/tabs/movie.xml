@@ -79,7 +79,7 @@
 
                     <brls:Label
                         id="movie/label/title"
-                        fontSize="42"
+                        fontSize="34"
                         marginBottom="14" />
 
                     <brls:Box
@@ -153,8 +153,11 @@
                             text="@i18n/main/media/play"
                             buttonStyle="primary" />
 
+                        <IconButton id="movie/restart" icon="@res/icon/ico-play-dark.svg" text="从头播放" buttonStyle="bordered" marginLeft="12" visibility="gone" />
+
                         <IconButton
                             id="movie/download"
+                            visibility="gone"
                             icon="@res/icon/ico-download-light.svg"
                             text="@i18n/main/download/start"
                             buttonStyle="bordered"
@@ -168,9 +171,11 @@
                             marginLeft="12" />
                     </brls:Box>
 
+                    <brls:Label id="movie/status" fontSize="16" marginBottom="12" textColor="@theme/font/grey" />
+
                     <TextBox
                         id="movie/label/overview"
-                        fontSize="15"
+                        fontSize="18"
                         textColor="@theme/font/grey" />
 
                 </brls:Box>

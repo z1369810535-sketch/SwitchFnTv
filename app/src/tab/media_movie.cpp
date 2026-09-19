@@ -15,12 +15,22 @@
 
 using namespace brls::literals;  // for _i18n
 
-MediaMovie::MediaMovie(const jellyfin::Item& item) : itemId(item.Id) {
+MediaMovie::MediaMovie(const jellyfin::Item& item) : itemId(item.Id), currentItem(item) {
     brls::Logger::debug("Tab MediaMovie: create");
     // Inflate the tab from the XML file
     this->inflateFromXMLRes("xml/tabs/movie.xml");
 
     this->labelTitle->setText(item.Name);
+    this->labelStatus->setText("正在读取详情…");
+    this->labelOverview->setText("正在加载简介…");
+    this->labelOverview->setFocusable(true);
+    this->labelOverview->registerClickAction([this](...) { Dialog::show(this->labelOverview->getFullText()); return true; });
+    this->bannerBox->setVisibility(brls::Visibility::GONE);
+    this->contentRow->setMarginTop(24);
+    this->contentInfo->setMarginTop(0);
+    this->imagePoster->getParent()->setMarginTop(0);
+    fntv::loadPoster(this->imagePoster, item);
+    this->registerAction("刷新详情", brls::BUTTON_Y, [this](...) { this->doRequest(); return true; });
     this->people->registerCell("Cell", MediaCardCell::create);
     this->similar->registerCell("Cell", VideoCardCell::create);
 
@@ -34,9 +44,15 @@ MediaMovie::MediaMovie(const jellyfin::Item& item) : itemId(item.Id) {
     this->btnPlay->setCustomNavigationRoute(brls::FocusDirection::DOWN, "movie/people");
     this->btnDownload->setCustomNavigationRoute(brls::FocusDirection::DOWN, "movie/people");
 
-    this->btnPlay->registerClickAction([this, item](...) {
-        PlayerView* view = new PlayerView(item, this->playTicks, this->sourceId);
-        view->setTitie(item.ProductionYear ? fmt::format("{} ({})", item.Name, item.ProductionYear) : item.Name);
+    this->btnPlay->registerClickAction([this](...) {
+        PlayerView* view = new PlayerView(this->currentItem);
+        view->setTitie(this->currentItem.Name);
+        return true;
+    });
+
+    this->btnRestart->registerClickAction([this](...) {
+        PlayerView* view = new PlayerView(this->currentItem, 0);
+        view->setTitie(this->currentItem.Name);
         return true;
     });
 
@@ -113,20 +129,18 @@ void MediaMovie::updateDownloadButton() {
     }
 }
 
-void MediaMovie::doRequest() {
-    int64_t ticks = MPVCore::instance().playback_time;
-    this->playTicks = ticks * jellyfin::PLAYTICKS;
-    this->btnPlay->setText(ticks > 0 ? misc::sec2Time(ticks) : "main/media/play"_i18n);
-}
+void MediaMovie::doRequest() { this->doMovie(); }
 
 void MediaMovie::doMovie() {
+    const auto id = this->itemId;
     ASYNC_RETAIN
     fntv::async<jellyfin::Detail>(
-        [this] { return fntv::getDetail(this->itemId); },
+        [id] { return fntv::getDetail(id); },
         [ASYNC_TOKEN](const jellyfin::Detail& r) {
             ASYNC_RELEASE
-            this->labelTitle->setText(r.Name);
+            if (!r.Name.empty()) this->labelTitle->setText(r.Name);
             this->labelYear->setText(r.ProductionYear ? std::to_string(r.ProductionYear) : "");
+            this->labelYear->getParent()->setVisibility(r.ProductionYear ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
             this->parentalRating->getParent()->setVisibility(brls::Visibility::GONE);
             if (r.CommunityRating == 0.f) {
                 this->labelRating->getParent()->setVisibility(brls::Visibility::GONE);
@@ -134,7 +148,7 @@ void MediaMovie::doMovie() {
                 this->labelRating->setText(fmt::format("{:.1f}", r.CommunityRating));
                 this->labelRating->getParent()->setVisibility(brls::Visibility::VISIBLE);
             }
-            this->labelOverview->setText(r.Overview);
+            this->labelOverview->setText(r.Overview.empty() ? "暂无简介" : r.Overview);
             if (r.Genres.empty()) {
                 this->labelGenres->setVisibility(brls::Visibility::GONE);
             } else {
@@ -151,19 +165,31 @@ void MediaMovie::doMovie() {
             }
             this->updateFavoriteButton(r.UserData.IsFavorite);
             fntv::loadPoster(this->imagePoster, r);
-            this->bannerBox->setVisibility(brls::Visibility::GONE);
-            this->contentRow->setMarginTop(0);
-            this->contentInfo->setMarginTop(0);
+            const bool backdrop = !r.BackdropImageTags.empty();
+            this->bannerBox->setVisibility(backdrop ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+            if (backdrop) fntv::loadImagePath(this->imageBackdrop, r.BackdropImageTags.front());
+            this->contentRow->setMarginTop(backdrop ? -100 : 24);
+            this->contentInfo->setMarginTop(backdrop ? 110 : 0);
+            this->imagePoster->getParent()->setMarginTop(0);
             this->btnSource->setVisibility(brls::Visibility::GONE);
             this->btnDownload->setVisibility(brls::Visibility::GONE);
+            this->currentItem = r;
             this->playTicks = r.UserData.PlaybackPositionTicks;
+            this->btnRestart->setVisibility(this->playTicks > 0 ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+            this->labelStatus->setText(r.RunTimeTicks > 0 ? fmt::format("时长 {}", misc::sec2Time(r.RunTimeTicks / jellyfin::PLAYTICKS)) : "");
+            const std::string target = r.People.empty() ? "movie/label/overview" : "movie/people";
+            this->btnPlay->setCustomNavigationRoute(brls::FocusDirection::DOWN, target);
+            this->btnRestart->setCustomNavigationRoute(brls::FocusDirection::DOWN, target);
+            this->btnFavorite->setCustomNavigationRoute(brls::FocusDirection::DOWN, target);
             this->btnPlay->setText(
-                this->playTicks > 0 ? misc::sec2Time(this->playTicks / jellyfin::PLAYTICKS) : "main/media/play"_i18n);
+                this->playTicks > 0 ? "继续播放 " + misc::sec2Time(this->playTicks / jellyfin::PLAYTICKS) : "main/media/play"_i18n);
         },
         [ASYNC_TOKEN](const std::string& ex) {
             ASYNC_RELEASE
             this->labelPeople->setVisibility(brls::Visibility::GONE);
             this->people->setVisibility(brls::Visibility::GONE);
+            this->labelStatus->setText("详情加载失败，按 Y 重试");
+            this->labelOverview->setText(ex);
             brls::Logger::warning("doMovie {}", ex);
         });
 }
@@ -175,39 +201,23 @@ void MediaMovie::doSimilar() {
 
 
 bool MediaMovie::doFavorite() {
+    const auto id = this->itemId;
+    const bool favorite = !this->isFavorite;
     ASYNC_RETAIN
-    jellyfin::postJSON(
-        {
-            {"itemId", this->itemId},
-        },
-        [ASYNC_TOKEN](const jellyfin::UserDataResult& r) {
+    fntv::async<bool>(
+        [id, favorite] { return fntv::setFavorite(id, favorite); },
+        [ASYNC_TOKEN](bool favorite) {
             ASYNC_RELEASE
-            this->updateFavoriteButton(r.IsFavorite);
+            this->updateFavoriteButton(favorite);
         },
         [ASYNC_TOKEN](const std::string& ex) {
             ASYNC_RELEASE
-            brls::Application::popActivity(brls::TransitionAnimation::NONE, [ex]() { brls::Application::notify(ex); });
-        },
-        jellyfin::apiFavoriteItems, AppConfig::instance().getUserId(), this->itemId);
-
+            brls::Application::notify(ex);
+        });
     return true;
 }
 
-bool MediaMovie::unFavorite() {
-    ASYNC_RETAIN
-    jellyfin::deleteJSON<jellyfin::UserDataResult>(
-        [ASYNC_TOKEN](const jellyfin::UserDataResult& r) {
-            ASYNC_RELEASE
-            this->updateFavoriteButton(r.IsFavorite);
-        },
-        [ASYNC_TOKEN](const std::string& ex) {
-            ASYNC_RELEASE
-            brls::Application::popActivity(brls::TransitionAnimation::NONE, [ex]() { brls::Application::notify(ex); });
-        },
-        jellyfin::apiFavoriteItems, AppConfig::instance().getUserId(), this->itemId);
-
-    return true;
-}
+bool MediaMovie::unFavorite() { return this->doFavorite(); }
 
 void MediaMovie::updateFavoriteButton(bool favorite) {
     this->isFavorite = favorite;

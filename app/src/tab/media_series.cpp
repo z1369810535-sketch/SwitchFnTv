@@ -18,6 +18,7 @@
 #include "view/context_menu.hpp"
 #include "utils/keybind.hpp"
 #include "utils/dialog.hpp"
+#include "utils/misc.hpp"
 #include <fmt/ranges.h>
 
 using namespace brls::literals;  // for _i18n
@@ -34,6 +35,16 @@ MediaSeries::MediaSeries(const jellyfin::Episode& item) {
     }
 
     this->labelTitle->setText(item.Name);
+    this->labelStatus->setText("正在读取详情…");
+    this->labelOverview->setText("正在加载简介…");
+    this->labelOverview->setFocusable(true);
+    this->labelOverview->registerClickAction([this](...) { Dialog::show(this->labelOverview->getFullText()); return true; });
+    this->bannerBox->setVisibility(brls::Visibility::GONE);
+    this->contentRow->setMarginTop(24);
+    this->contentInfo->setMarginTop(0);
+    this->imagePoster->getParent()->setMarginTop(0);
+    fntv::loadPoster(this->imagePoster, item);
+    this->registerAction("刷新详情", brls::BUTTON_Y, [this](...) { this->doRequest(); return true; });
     this->seasons->registerCell("Cell", VideoCardCell::create);
     this->people->registerCell("Cell", MediaCardCell::create);
     this->similar->registerCell("Cell", VideoCardCell::create);
@@ -71,6 +82,7 @@ MediaSeries::MediaSeries(const jellyfin::Episode& item) {
     });
 
     this->doSeason();
+    this->updateResume();
     this->doSeries();
     this->doSimilar();
     this->doSpecial();
@@ -89,16 +101,20 @@ void MediaSeries::doRequest() {
     // after playback: next episode (Play button) + watched states of the
     // season cards; the episodes are refreshed by MediaSeason itself
     this->doSeason();
+    this->doSeries();
+    this->updateResume();
 }
 
 void MediaSeries::doSeries() {
+    const auto id = this->seriesId;
     ASYNC_RETAIN
     fntv::async<jellyfin::Detail>(
-        [this] { return fntv::getDetail(this->seriesId); },
+        [id] { return fntv::getDetail(id); },
         [ASYNC_TOKEN](const jellyfin::Detail& r) {
             ASYNC_RELEASE
-            this->labelTitle->setText(r.Name);
+            if (!r.Name.empty()) this->labelTitle->setText(r.Name);
             this->labelYear->setText(r.ProductionYear ? std::to_string(r.ProductionYear) : "");
+            this->labelYear->getParent()->setVisibility(r.ProductionYear ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
             this->parentalRating->getParent()->setVisibility(brls::Visibility::GONE);
             if (r.CommunityRating == 0.f) {
                 this->labelRating->getParent()->setVisibility(brls::Visibility::GONE);
@@ -106,7 +122,7 @@ void MediaSeries::doSeries() {
                 this->labelRating->setText(fmt::format("{:.1f}", r.CommunityRating));
                 this->labelRating->getParent()->setVisibility(brls::Visibility::VISIBLE);
             }
-            this->labelOverview->setText(r.Overview);
+            this->labelOverview->setText(r.Overview.empty() ? "暂无简介" : r.Overview);
             if (r.Genres.empty()) this->labelGenres->setVisibility(brls::Visibility::GONE);
             else {
                 this->labelGenres->setText(fmt::format("{}", fmt::join(r.Genres, ", ")));
@@ -122,25 +138,31 @@ void MediaSeries::doSeries() {
             }
             this->updateFavoriteButton(r.UserData.IsFavorite);
             fntv::loadPoster(this->imagePoster, r);
-            this->bannerBox->setVisibility(brls::Visibility::GONE);
-            this->contentRow->setMarginTop(0);
-            this->contentInfo->setMarginTop(0);
+            const bool backdrop = !r.BackdropImageTags.empty();
+            this->bannerBox->setVisibility(backdrop ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+            if (backdrop) fntv::loadImagePath(this->imageBackdrop, r.BackdropImageTags.front());
+            this->contentRow->setMarginTop(backdrop ? -100 : 24);
+            this->contentInfo->setMarginTop(backdrop ? 110 : 0);
+            this->imagePoster->getParent()->setMarginTop(0);
             this->btnDownload->setVisibility(brls::Visibility::GONE);
         },
         [ASYNC_TOKEN](const std::string& ex) {
             ASYNC_RELEASE
             this->labelPeople->setVisibility(brls::Visibility::GONE);
             this->people->setVisibility(brls::Visibility::GONE);
+            this->labelStatus->setText("详情加载失败，按 Y 重试");
+            this->labelOverview->setText(ex);
             brls::Logger::warning("doSeries {}", ex);
         });
 }
 
 void MediaSeries::doSeason() {
+    const auto id = this->seriesId;
     ASYNC_RETAIN
     fntv::async<jellyfin::Result<jellyfin::Episode>>(
-        [this] {
-            auto r = fntv::listSeasons(this->seriesId);
-            if (r.Items.empty()) r = fntv::listEpisodes(this->seriesId);
+        [id] {
+            auto r = fntv::listSeasons(id);
+            if (r.Items.empty()) r = fntv::listEpisodes(id);
             return r;
         },
         [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
@@ -169,27 +191,58 @@ void MediaSeries::doSimilar() {
 }
 
 
-void MediaSeries::doSpecial() {}
+void MediaSeries::doSpecial() {
+    this->special->setVisibility(brls::Visibility::GONE);
+    this->labelSpecial->setVisibility(brls::Visibility::GONE);
+}
 
 void MediaSeries::doPlay() {
+    const auto id = this->seriesId;
     ASYNC_RETAIN
     fntv::async<jellyfin::Result<jellyfin::Episode>>(
-        [this] { return fntv::listSeriesEpisodes(this->seriesId); },
+        [id] { return fntv::listSeriesEpisodes(id); },
         [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
             ASYNC_RELEASE
             if (r.Items.empty()) {
                 brls::Application::notify("暂无可播放的剧集");
                 return;
             }
-            PlayerView* view = new PlayerView(r.Items[0]);
+            const auto& item = r.Items[fntv::selectResumeEpisode(r.Items)];
+            PlayerView* view = new PlayerView(item);
             view->setTitie(
-                fmt::format("S{}E{} - {}", r.Items[0].ParentIndexNumber, r.Items[0].IndexNumber, r.Items[0].Name));
+                fmt::format("S{}E{} - {}", item.ParentIndexNumber, item.IndexNumber, item.Name));
             view->setSeries(this->seriesId);
             brls::sync([view]() { brls::Application::giveFocus(view); });
         },
         [ASYNC_TOKEN](const std::string& ex) {
             ASYNC_RELEASE
             brls::Application::notify(ex);
+        });
+}
+
+void MediaSeries::updateResume() {
+    const auto id = this->seriesId;
+    ASYNC_RETAIN
+    fntv::async<jellyfin::Result<jellyfin::Episode>>(
+        [id] { return fntv::listSeriesEpisodes(id); },
+        [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
+            ASYNC_RELEASE
+            if (r.Items.empty()) {
+                this->labelStatus->setText("暂无可播放剧集，按 Y 刷新");
+                this->btnPlay->setText("main/media/play"_i18n);
+                return;
+            }
+            auto item = r.Items[fntv::selectResumeEpisode(r.Items)];
+            fntv::applyLocalProgress(item);
+            const auto seconds = item.UserData.PlaybackPositionTicks / jellyfin::PLAYTICKS;
+            this->btnPlay->setText(fmt::format("{} S{}E{}", seconds > 0 ? "继续播放" : "播放", item.ParentIndexNumber, item.IndexNumber));
+            this->labelStatus->setText(fmt::format("共 {} 集 · S{}E{}{}", r.Items.size(), item.ParentIndexNumber,
+                item.IndexNumber, seconds > 0 ? " · 上次看到 " + misc::sec2Time(seconds) : ""));
+        },
+        [ASYNC_TOKEN](const std::string& ex) {
+            ASYNC_RELEASE
+            this->labelStatus->setText("读取播放记录失败，按 Y 重试");
+            brls::Logger::warning("series resume: {}", ex);
         });
 }
 
@@ -235,39 +288,23 @@ void MediaSeries::updateDownloadButton() {
 }
 
 bool MediaSeries::doFavorite() {
+    const auto id = this->seriesId;
+    const bool favorite = !this->isFavorite;
     ASYNC_RETAIN
-    jellyfin::postJSON(
-        {
-            {"itemId", this->seriesId},
-        },
-        [ASYNC_TOKEN](const jellyfin::UserDataResult& r) {
+    fntv::async<bool>(
+        [id, favorite] { return fntv::setFavorite(id, favorite); },
+        [ASYNC_TOKEN](bool favorite) {
             ASYNC_RELEASE
-            this->updateFavoriteButton(r.IsFavorite);
+            this->updateFavoriteButton(favorite);
         },
         [ASYNC_TOKEN](const std::string& ex) {
             ASYNC_RELEASE
-            brls::Application::popActivity(brls::TransitionAnimation::NONE, [ex]() { brls::Application::notify(ex); });
-        },
-        jellyfin::apiFavoriteItems, AppConfig::instance().getUserId(), this->seriesId);
-
+            brls::Application::notify(ex);
+        });
     return true;
 }
 
-bool MediaSeries::unFavorite() {
-    ASYNC_RETAIN
-    jellyfin::deleteJSON<jellyfin::UserDataResult>(
-        [ASYNC_TOKEN](const jellyfin::UserDataResult& r) {
-            ASYNC_RELEASE
-            this->updateFavoriteButton(r.IsFavorite);
-        },
-        [ASYNC_TOKEN](const std::string& ex) {
-            ASYNC_RELEASE
-            brls::Application::popActivity(brls::TransitionAnimation::NONE, [ex]() { brls::Application::notify(ex); });
-        },
-        jellyfin::apiFavoriteItems, AppConfig::instance().getUserId(), this->seriesId);
-
-    return true;
-}
+bool MediaSeries::unFavorite() { return this->doFavorite(); }
 
 void MediaSeries::updateFavoriteButton(bool favorite) {
     this->isFavorite = favorite;

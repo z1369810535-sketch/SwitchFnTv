@@ -55,6 +55,7 @@ public:
     bool getinfo(char** arg);
     int propfind(const std::string& url, std::ostream* out);
     std::string _post(const std::string& url, const std::string& data);
+    std::string _request(const std::string& method, const std::string& url, const std::string& data);
     void set_user_agent(const std::string& agent);
     void set_basic_auth(const std::string& user, const std::string& passwd);
     void _delete(const std::string& url, std::ostream* out);
@@ -83,6 +84,13 @@ public:
     }
 
     // Post methods
+    template <typename... Ts>
+    static std::string request(const std::string& method, const std::string& url, const std::string& data, Ts&&... ts) {
+        HTTP s;
+        set_option(s, std::forward<Ts>(ts)...);
+        return s._request(method, url, data);
+    }
+
     template <typename... Ts>
     static std::string post(const std::string& url, const std::string& data, Ts&&... ts) {
         HTTP s;

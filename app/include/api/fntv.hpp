@@ -41,6 +41,11 @@ struct SysConfigInfo {
 };
 
 struct PlaySession {
+    std::string base_url;
+    std::string token;
+    std::string history_file;
+    int64_t resume_ticks = 0;
+    jellyfin::Episode item;
     std::string item_guid;
     std::string media_guid;
     std::string video_guid;
@@ -50,7 +55,7 @@ struct PlaySession {
     std::string direct_url;
     std::string fallback_url;
     std::string cookie_header;
-    jellyfin::Source source;
+    jellyfin::Source source{};
 };
 
 LoginResult login(const std::string& base, const std::string& username, const std::string& password);
@@ -65,6 +70,11 @@ jellyfin::Result<jellyfin::Episode> listSeasons(const std::string& seriesGuid);
 jellyfin::Result<jellyfin::Episode> listEpisodes(const std::string& guid);
 jellyfin::Result<jellyfin::Episode> listSeriesEpisodes(const std::string& seriesGuid);
 PlaySession preparePlay(const std::string& itemGuid);
+void savePlaybackProgress(const PlaySession& session, double seconds, double duration, bool completed = false);
+void applyLocalProgress(jellyfin::Item& item);
+size_t selectResumeEpisode(const std::vector<jellyfin::Episode>& items);
+jellyfin::Result<jellyfin::Episode> listResume(size_t start, size_t pageSize);
+bool setFavorite(const std::string& guid, bool favorite);
 void loadPoster(brls::Image* view, const jellyfin::Item& item);
 void loadImagePath(brls::Image* view, const std::string& path);
 std::string subtitleCacheDir();

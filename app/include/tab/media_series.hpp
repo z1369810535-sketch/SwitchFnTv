@@ -35,6 +35,7 @@ private:
     BRLS_BIND(TextBox, labelOverview, "series/label/overview");
     BRLS_BIND(brls::Label, labelGenres, "series/label/genres");
     BRLS_BIND(IconButton, btnPlay, "series/play");
+    BRLS_BIND(brls::Label, labelStatus, "series/status");
     BRLS_BIND(IconButton, btnDownload, "series/download");
     BRLS_BIND(IconButton, btnFavorite, "series/favorite");
     BRLS_BIND(brls::Header, labelSeasons, "series/label/seasons");
@@ -45,7 +46,6 @@ private:
     BRLS_BIND(HRecyclerFrame, people, "series/people");
     BRLS_BIND(HRecyclerFrame, similar, "series/similar");
     BRLS_BIND(HRecyclerFrame, special, "series/special");
-    BRLS_BIND(brls::Box, boxRelated, "series/related/box");
 
     void doSeries();
     void doSeason();
@@ -53,6 +53,7 @@ private:
     void doSpecial();
     /// plays the next unwatched episode
     void doPlay();
+    void updateResume();
     /// downloads the whole show (filtered allLeaves, confirmation dialog)
     void doDownloadSeries();
     void updateDownloadButton();

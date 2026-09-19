@@ -35,6 +35,8 @@ private:
     BRLS_BIND(brls::Header, labelSimilar, "movie/label/similar");
     BRLS_BIND(brls::SelectorCell, btnSource, "movie/source");
     BRLS_BIND(IconButton, btnPlay, "movie/play");
+    BRLS_BIND(IconButton, btnRestart, "movie/restart");
+    BRLS_BIND(brls::Label, labelStatus, "movie/status");
     BRLS_BIND(IconButton, btnDownload, "movie/download");
     BRLS_BIND(IconButton, btnFavorite, "movie/favorite");
     BRLS_BIND(brls::Header, labelPeople, "movie/label/people");
@@ -52,6 +54,7 @@ private:
 
     int64_t playTicks = 0;
     std::string itemId;
+    jellyfin::Item currentItem;
     std::string sourceId;
     bool isFavorite = false;
 

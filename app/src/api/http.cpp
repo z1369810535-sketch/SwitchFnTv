@@ -260,6 +260,11 @@ std::string HTTP::_post(const std::string& url, const std::string& data) {
     return body.str();
 }
 
+std::string HTTP::_request(const std::string& method, const std::string& url, const std::string& data) {
+    curl_easy_setopt(this->easy, CURLOPT_CUSTOMREQUEST, method.c_str());
+    return this->_post(url, data);
+}
+
 void HTTP::_delete(const std::string& url, std::ostream* out) {
     curl_easy_setopt(this->easy, CURLOPT_URL, url.c_str());
     curl_easy_setopt(this->easy, CURLOPT_CUSTOMREQUEST, "DELETE");
