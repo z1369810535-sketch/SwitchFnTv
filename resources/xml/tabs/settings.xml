@@ -77,15 +77,18 @@
                     id="setting/player/tv_model" />
             </brls:Box>
 
+            <!-- Feiniu always direct-plays: the Jellyfin transcode options have no effect. -->
             <brls:Header
                 width="auto"
                 height="auto"
+                visibility="gone"
                 title="@i18n/main/setting/transcode/header"
                 marginBottom="0px" />
             <brls:Box
                 width="100%"
                 height="auto"
                 axis="column"
+                visibility="gone"
                 marginBottom="30px">
                 <brls:BooleanCell
                     id="setting/video/directplay" />
@@ -121,15 +124,18 @@
                     visibility="gone" />
             </brls:Box>
 
+            <!-- Downloads are not available for Feiniu yet. -->
             <brls:Header
                 width="auto"
                 height="auto"
+                visibility="gone"
                 title="@i18n/main/tabs/downloads"
                 marginBottom="0px" />
             <brls:Box
                 width="100%"
                 height="auto"
                 axis="column"
+                visibility="gone"
                 marginBottom="30px">
                 <brls:SelectorCell
                     id="setting/download/quality" />
@@ -206,7 +212,9 @@
                     id="setting/single" />
                 <brls:BooleanCell
                     id="setting/overclock" />
+                <!-- Jellyfin display-preference sync; no Feiniu equivalent. -->
                 <brls:BooleanCell
+                    visibility="gone"
                     id="setting/sync" />
                 <SelectorCell
                     id="setting/language"

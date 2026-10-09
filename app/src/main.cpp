@@ -116,11 +116,14 @@ int main(int argc, char* argv[]) {
         brls::Application::blockInputs();
         brls::async([]() {
             const bool logged = AppConfig::instance().checkLogin();
-            brls::sync([logged]() {
+            const std::string reason = AppConfig::instance().getLoginError();
+            brls::sync([logged, reason]() {
                 brls::Application::unblockInputs();
                 brls::Application::clear();
                 if (!logged) {
                     brls::Application::pushActivity(new ServerList());
+                    // Say why the saved account was not opened instead of silently showing the list.
+                    if (!reason.empty()) brls::Application::notify(reason);
                 } else {
                     brls::Application::pushActivity(new MainActivity());
                 }

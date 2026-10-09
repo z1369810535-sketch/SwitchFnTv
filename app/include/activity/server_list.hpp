@@ -20,6 +20,7 @@ public:
 
     void onContentAvailable() override;
     std::string getUrl();
+    const std::string& getServerName() const { return this->serverName; }
     void onUser(const std::string& id);
     void willAppear(bool resetState = false) override;
 
@@ -35,4 +36,6 @@ private:
     void onServer(const AppServer &s);
     void setActive(brls::View *active);
     void getActive();
+
+    std::string serverName;
 };

@@ -131,6 +131,8 @@ public:
     void initThemes();
     void save();
     bool checkLogin();
+    /// Why the last checkLogin() failed; empty when it succeeded or no account is saved.
+    const std::string& getLoginError() const { return this->loginError; }
     /// @brief 检查是否安装Danmuku插件
     bool checkDanmuku();
 
@@ -219,6 +221,7 @@ private:
     UserIter user;
     std::string user_id;
     std::string server_url;
+    std::string loginError;
     std::string device;
     std::string device_name;
     std::vector<AppUser> users;

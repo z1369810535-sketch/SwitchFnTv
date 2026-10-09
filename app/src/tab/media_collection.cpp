@@ -15,6 +15,7 @@
 #include "tab/suggest_movie.hpp"
 #include "tab/song_list.hpp"
 #include "utils/keybind.hpp"
+#include "view/recycling_grid.hpp"
 #include <fmt/ranges.h>
 
 using namespace brls::literals;  // for _i18n
@@ -138,8 +139,29 @@ private:
     size_t pageSize = 60;
 };
 
-MediaCollection::MediaCollection(const std::string& itemId, const std::string& itemType, const std::string& genresId)
-    : itemId(itemId), genresId(genresId), itemType(itemType), startIndex(0) {
+namespace {
+int sortIndexOf(const std::string& column) {
+    const auto& options = fntv::sortOptions();
+    for (size_t i = 0; i < options.size(); ++i)
+        if (options[i].column == column) return static_cast<int>(i);
+    return 0;
+}
+}  // namespace
+
+// Libraries open newest first like the Feiniu web client; folders keep file-name order
+// (episodes stored as 01.mkv, 02.mkv... stay in sequence). Both are remembered per session.
+MediaCollection::SortPref MediaCollection::libraryPref = {sortIndexOf(fntv::SORT_ADDED), 1};
+MediaCollection::SortPref MediaCollection::folderPref = {sortIndexOf(fntv::SORT_NAME), 0};
+
+void MediaCollection::clearPref() {
+    customPrefs.clear();
+    libraryPref = {sortIndexOf(fntv::SORT_ADDED), 1};
+    folderPref = {sortIndexOf(fntv::SORT_NAME), 0};
+}
+
+MediaCollection::MediaCollection(
+    const std::string& itemId, const std::string& itemType, const std::string& genresId, const std::string& title)
+    : itemId(itemId), genresId(genresId), itemType(itemType), title(title), startIndex(0) {
     brls::Logger::debug("MediaCollection: create {} type {}", itemId, itemType);
     this->inflateFromXMLRes("xml/tabs/media.xml");
 
@@ -150,9 +172,9 @@ MediaCollection::MediaCollection(const std::string& itemId, const std::string& i
         this->recycler->estimatedRowHeight = brls::getStyle().getMetric("app/books/height");
     }
 
-    std::string serverUrl = AppConfig::instance().getUrl();
-    this->prefKey = fmt::format("{}/web/index.html{}", serverUrl, itemType);
-    std::transform(this->prefKey.begin(), this->prefKey.end(), this->prefKey.begin(), ::tolower);
+    const SortPref& pref = this->isFolder() ? folderPref : libraryPref;
+    this->sortIndex = pref.sort;
+    this->orderIndex = pref.order;
 
     this->recycler->registerAction("hints/refresh"_i18n, brls::BUTTON_BACK, [this](...) {
         this->doRequest(true);
@@ -167,38 +189,41 @@ MediaCollection::MediaCollection(const std::string& itemId, const std::string& i
     this->recycler->registerCell("Cell", VideoCardCell::create);
     this->recycler->onNextPage([this]() { this->doRequest(); });
 
-    if (this->itemType == jellyfin::mediaTypePlaylist) {
-        this->doRequest();
-    } else if (AppConfig::SYNC) {
-        if (MediaCollection::customPrefs.empty()) {
-            this->doPreferences();
-        } else {
-            this->loadFilter();
-            this->doRequest();
-        }
-    } else {
-        this->registerAction("main/media/sort"_i18n, brls::BUTTON_Y, [this](...) {
-            MediaFilter* filter = new MediaFilter();
-            filter->getEvent()->subscribe([this]() {
-                this->doRequest(true);
-            });
-            brls::Application::pushActivity(new brls::Activity(filter));
-            return true;
-        });
+    // Y sorts every library and folder (it used to open a Jellyfin filter whose choice was
+    // ignored, and was not registered at all while "sync settings" was on).
+    this->registerAction("main/media/sort"_i18n, brls::BUTTON_Y, [this](...) {
+        this->openSort();
+        return true;
+    });
 
-        this->doRequest();
-    }
+    this->updateHeader();
+    this->doRequest();
 }
 
 brls::View* MediaCollection::getDefaultFocus() { return this->recycler; }
 
-void MediaCollection::doPreferences() {
-    this->doRequest();
+bool MediaCollection::isFolder() const { return this->itemType == jellyfin::mediaTypeFolder; }
+
+void MediaCollection::openSort() {
+    MediaFilter* filter = new MediaFilter(this->sortIndex, this->orderIndex, [this](int sort, int order) {
+        this->sortIndex = sort;
+        this->orderIndex = order;
+        (this->isFolder() ? folderPref : libraryPref) = {sort, order};
+        this->doRequest(true);
+    });
+    brls::Application::pushActivity(new brls::Activity(filter));
 }
 
-void MediaCollection::loadFilter() {}
-
-void MediaCollection::saveFilter() {}
+void MediaCollection::updateHeader() {
+    this->header->setTitle(this->title.empty() ? std::string("媒体库") : this->title);
+    const auto& options = fntv::sortOptions();
+    std::string subtitle;
+    if (this->totalCount >= 0) subtitle = "共 " + std::to_string(this->totalCount) + " 项 · ";
+    if (this->sortIndex >= 0 && this->sortIndex < static_cast<int>(options.size()))
+        subtitle += brls::getStr(options[this->sortIndex].label) + " " +
+                    (this->orderIndex ? "main/media/descending"_i18n : "main/media/ascending"_i18n);
+    this->header->setSubtitle(subtitle);
+}
 
 void MediaCollection::doRequest(bool refresh) {
     if (refresh) {
@@ -206,6 +231,8 @@ void MediaCollection::doRequest(bool refresh) {
         this->startIndex = 0;
         this->loading = false;
         this->hasMore = true;
+        this->totalCount = -1;
+        this->updateHeader();
         this->recycler->showSkeleton();
     }
     if (this->loading || !this->hasMore) return;
@@ -215,10 +242,16 @@ void MediaCollection::doRequest(bool refresh) {
     const std::string type = this->itemType;
     const size_t start = this->startIndex;
     const size_t page = this->pageSize ? this->pageSize : 30;
+    const auto& options = fntv::sortOptions();
+    const std::string column =
+        this->sortIndex >= 0 && this->sortIndex < static_cast<int>(options.size()) ? options[this->sortIndex].column : "";
+    const std::string direction = this->orderIndex ? "DESC" : "ASC";
 
     ASYNC_RETAIN
     fntv::async<jellyfin::Result<jellyfin::Episode>>(
-        [parent, type, start, page] { return fntv::listItems(parent, start, page, type); },
+        [parent, type, start, page, column, direction] {
+            return fntv::listItems(parent, start, page, type, column, direction);
+        },
         [ASYNC_TOKEN, generation, page](const jellyfin::Result<jellyfin::Episode>& r) {
             ASYNC_RELEASE
             if (generation != this->requestGeneration) return;
@@ -226,8 +259,11 @@ void MediaCollection::doRequest(bool refresh) {
             this->startIndex = r.StartIndex + page;
             this->hasMore = !r.Items.empty();
             if (r.StartIndex == 0) {
-                if (r.Items.empty()) this->recycler->setEmpty();
-                else {
+                this->totalCount = r.TotalRecordCount;
+                this->updateHeader();
+                if (r.Items.empty()) {
+                    this->recycler->setEmpty("这里还没有可显示的影片");
+                } else {
                     this->recycler->setDataSource(new VideoDataSource(r.Items));
                     brls::Application::giveFocus(this->recycler);
                 }
@@ -246,7 +282,8 @@ void MediaCollection::doRequest(bool refresh) {
             if (this->startIndex > 0) {
                 brls::Application::notify(ex);
             } else {
-                this->recycler->setError(ex);
+                // Keep the way out visible: "-" reloads, B goes back.
+                this->recycler->setError(ex + "\n按 - 键重试");
             }
         });
 }

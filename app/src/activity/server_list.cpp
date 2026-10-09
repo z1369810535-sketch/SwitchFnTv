@@ -12,7 +12,7 @@
 #include "utils/image.hpp"
 #include "utils/dialog.hpp"
 #include "utils/keybind.hpp"
-#include "api/jellyfin.hpp"
+#include "api/fntv.hpp"
 
 using namespace brls::literals;  // for _i18n
 
@@ -88,34 +88,42 @@ public:
         cell->labelName->setText(u.name);
         cell->registerAction("hints/delete"_i18n, brls::BUTTON_X, deleteAction);
         cell->registerAction(brls::BRLS_KBD_KEY_DELETE, deleteAction);
-
-        std::string url = fmt::format(fmt::runtime(jellyfin::apiUserImage), u.id, "");
-        Image::with(cell->picture, this->parent->getUrl() + url);
+        // Feiniu has no Jellyfin-style avatar endpoint: keep the placeholder instead of a failing request.
         return cell;
     }
 
     void onItemSelected(brls::Box* recycler, size_t index) override {
+        const AppUser u = this->list.at(index);
+        const std::string url = this->parent->getUrl();
+        const std::string serverName = this->parent->getServerName();
         brls::Application::blockInputs();
 
-        brls::async([this, index]() {
-            auto& u = this->list.at(index);
-            HTTP::Header header = {AppConfig::instance().getAuth(u.access_token)};
-            std::string uri = fmt::format("{}/Users/{}", this->parent->getUrl(), u.id);
-
+        // Validate the saved Feiniu session (the old code queried Jellyfin's /Users/{id},
+        // which always failed here). An expired session goes straight to the password form.
+        brls::async([u, url, serverName, recycler]() {
             try {
-                std::string resp = HTTP::get(uri, header, HTTP::Timeout{});
-                jellyfin::UserInfo info = nlohmann::json::parse(resp);
-                u.is_admin = info.Policy.IsAdministrator;
-                u.config = std::move(info.Configuration);
-                brls::sync([this, u]() {
-                    AppConfig::instance().addUser(u, this->parent->getUrl());
+                fntv::userInfo(url, u.access_token, 5000, 2);
+                brls::sync([u, url]() {
+                    AppConfig::instance().addUser(u, url);
                     brls::Application::unblockInputs();
                     brls::Application::clear();
                     brls::Application::pushActivity(new MainActivity(), brls::TransitionAnimation::NONE);
                     MediaCollection::clearPref();
                 });
+            } catch (const fntv::ApiError& ex) {
+                const bool expired = ex.kind == fntv::ErrorKind::Auth;
+                const std::string msg = ex.what();
+                brls::sync([expired, msg, u, url, serverName, recycler]() {
+                    brls::Application::unblockInputs();
+                    if (expired) {
+                        brls::Application::notify("登录已过期，请重新输入密码");
+                        recycler->present(new ServerLogin(serverName, url, u.name));
+                    } else {
+                        Dialog::show(msg);
+                    }
+                });
             } catch (const std::exception& ex) {
-                std::string msg = ex.what();
+                const std::string msg = ex.what();
                 brls::sync([msg]() {
                     brls::Application::unblockInputs();
                     Dialog::show(msg);
@@ -159,7 +167,7 @@ void ServerList::onContentAvailable() {
     this->recyclerUsers->registerCell("Cell", []() { return new UserCell(); });
 
     this->btnSignin->registerClickAction([this](brls::View* view) {
-        view->present(new ServerLogin("", this->getUrl()));
+        view->present(new ServerLogin(this->serverName, this->getUrl()));
         return true;
     });
 }
@@ -209,6 +217,7 @@ void ServerList::willAppear(bool resetState) {
 }
 
 void ServerList::onServer(const AppServer& s) {
+    this->serverName = s.name;
     this->inputUrl->setDetailText(s.urls.front());
     this->inputUrl->registerClickAction([&](...) {
         brls::Dropdown* dropdown = new brls::Dropdown("main/setting/url"_i18n, s.urls, [&](int selected) {

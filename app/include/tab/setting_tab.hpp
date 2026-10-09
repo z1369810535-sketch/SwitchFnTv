@@ -60,7 +60,6 @@ private:
     BRLS_BIND(brls::BooleanCell, btnSync, "setting/sync");
     BRLS_BIND(brls::SelectorCell, inputThreads, "setting/network/threads");
     BRLS_BIND(brls::SelectorCell, selectorTimeout, "setting/network/timeout");
-    BRLS_BIND(brls::BooleanCell, btnTls, "setting/network/tls");
     BRLS_BIND(brls::BooleanCell, btnProxy, "setting/network/proxy_status");
     BRLS_BIND(brls::InputCell, inputProxy, "setting/network/proxy");
 

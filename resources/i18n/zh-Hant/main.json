@@ -46,6 +46,7 @@
     "common": "通用",
     "speed": "倍速",
     "quality": "畫質",
+    "setting": "播放設定",
     "chapter": "章節",
     "auto": "自動",
     "toggle": "播放/暫停",
@@ -189,7 +190,7 @@
       "header": "伺服器",
       "detail": "詳細資料",
       "connect_new": "新伺服器",
-      "connect_to": "連線到Jellyfin伺服器",
+      "connect_to": "連線到飛牛影視",
       "invalid": "伺服器URL無效！",
       "connect": "連線",
       "delete": "是否刪除？",
@@ -313,7 +314,7 @@
         "keyboard": "鍵盤"
       },
       "config_dir": "設定檔目錄",
-      "logout": "退出登入當前的帳號 (應用將會退出)",
+      "logout": "登出目前帳號？本機儲存的登入憑證會被刪除",
       "up2date": "程式已經是最新版",
       "upgrade": "發現新版本 {}，是否更新？",
       "updating": "更新進行中，是否取消更新？",
@@ -323,8 +324,8 @@
   "hints": {
     "hint1": "請從桌面選擇任意遊戲並按住  鍵",
     "hint2": "按下  開啟, 在遊戲開啟期間按住  鍵，直到進入 hbmenu",
-    "hint3": "在 hbmenu 選單中選擇 Switchfin",
-    "hint4": "選用：安裝 Switchfin NSP 通過桌面圖示 Switchfin",
+    "hint3": "在 hbmenu 選單中選擇 SwitchFnTv",
+    "hint4": "選用：安裝 NSP 通過桌面圖示開啟 SwitchFnTv",
     "hint_nsp": "按下  安裝桌面圖示",
     "hint_confirm": "安裝桌面圖示可能導致主機被ban\n請再次確認",
     "hint_right": "掌機圖片來自於網路，版權歸任天堂 Nintendo Co., Ltd 所有"

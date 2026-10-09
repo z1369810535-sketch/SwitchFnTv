@@ -1,10 +1,17 @@
 <brls:Box
     width="auto"
     height="auto"
+    axis="column"
     paddingLeft="@style/main/content_padding_sides"
     paddingRight="@style/main/content_padding_sides"
     paddingTop="@style/main/content_padding_top_bottom"
     paddingBottom="@style/main/content_padding_top_bottom">
+
+    <!-- library / folder name, item count and current sort; marginRight keeps it clear of ButtonClose -->
+    <brls:Header
+        id="media/header"
+        marginRight="56"
+        marginBottom="10" />
 
     <RecyclingGrid
         grow="1"

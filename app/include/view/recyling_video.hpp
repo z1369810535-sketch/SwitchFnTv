@@ -29,6 +29,8 @@ public:
     void setFrameHeight(float height);
     void setItemWidth(float width);
     void setPageSize( size_t pageSize);
+    /// Hide the whole row (title included) while it has nothing to show, e.g. "continue watching".
+    void setHideWhenEmpty(bool hide) { this->hideWhenEmpty = hide; }
     void onQuery(const Callback& callback = nullptr);
     void onFetch(const Fetch& callback = nullptr);
     void doRequest(bool refresh = false);
@@ -46,4 +48,7 @@ private:
     size_t requestGeneration = 0;
     bool loading = false;
     bool hasMore = true;
+    bool hideWhenEmpty = false;
+
+    void hideRow();
 };

@@ -46,6 +46,7 @@
     "common": "通用",
     "speed": "倍速",
     "quality": "画质",
+    "setting": "播放设置",
     "chapter": "章节",
     "auto": "自动",
     "toggle": "播放/暂停",
@@ -189,7 +190,7 @@
       "header": "服务器",
       "detail": "服务器详情",
       "connect_new": "新服务器",
-      "connect_to": "连接至Jellyfin服务器",
+      "connect_to": "连接至飞牛影视",
       "invalid": "URL 必须以 http:// 或 https:// 开头",
       "connect": "连接",
       "delete": "是否删除？",
@@ -313,7 +314,7 @@
         "keyboard": "键盘"
       },
       "config_dir": "配置目录",
-      "logout": "退出登录当前的账户 (应用将会退出)",
+      "logout": "退出当前账户？本机保存的登录凭证会被删除",
       "up2date": "应用已经是最新版",
       "upgrade": "发现新版本 {}，是否更新？",
       "updating": "更新进行中，是否取消更新？",
@@ -323,8 +324,8 @@
   "hints": {
     "hint1": "请从桌面选择任意游戏并按住  键",
     "hint2": "点击  打开, 在应用开启期间保持按住  键，直到进入 hbmenu",
-    "hint3": "在 hbmenu 菜单中选择 Switchfin",
-    "hint4": "可选：安装 Switchfin NSP 通过桌面图标直接打开 Switchfin",
+    "hint3": "在 hbmenu 菜单中选择 SwitchFnTv",
+    "hint4": "可选：安装 NSP 通过桌面图标直接打开 SwitchFnTv",
     "hint_nsp": "点击  安装桌面图标",
     "hint_confirm": "安装桌面图标可能导致ban机\n请再次确认",
     "hint_right": "掌机图片来源于网络，版权归任天堂 Nintendo Co., Ltd 所有"

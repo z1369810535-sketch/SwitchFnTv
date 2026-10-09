@@ -3,6 +3,7 @@
 #include "view/mpv_core.hpp"
 #include "view/video_card.hpp"
 #include "api/jellyfin.hpp"
+#include "api/fntv.hpp"
 #include "utils/dialog.hpp"
 #include "utils/download.hpp"
 
@@ -50,7 +51,7 @@ void MenuItem::setTitle(const std::string& text) { this->title->setText(text); }
 
 brls::View* MenuItem::create() { return new MenuItem(); }
 
-ContextMenu::ContextMenu(const jellyfin::Item& item, BaseCardCell* view) : itemId(item.Id), cell(view) {
+ContextMenu::ContextMenu(const jellyfin::Episode& item, BaseCardCell* view) : item(item), itemId(item.Id), cell(view) {
     this->inflateFromXMLRes("xml/view/context_menu.xml");
     brls::Logger::debug("ContextMenu: create");
 
@@ -64,7 +65,7 @@ ContextMenu::ContextMenu(const jellyfin::Item& item, BaseCardCell* view) : itemI
     });
     this->cancel->addGestureRecognizer(new brls::TapGestureRecognizer(this->cancel));
 
-    this->labelTitle->setText(item.Name);
+    this->labelTitle->setText(item.Type == jellyfin::mediaTypeEpisode ? fntv::episodeTitle(item) : item.Name);
 
     this->btnFavorite->registerClickAction([this](brls::View* view) {
         if (this->isFavorite)
@@ -83,128 +84,76 @@ ContextMenu::ContextMenu(const jellyfin::Item& item, BaseCardCell* view) : itemI
     });
     this->btnMarkPlay->addGestureRecognizer(new brls::TapGestureRecognizer(this->btnMarkPlay));
     this->updatePlayedButton(item.UserData.Played);
+    // A directory has no watched state of its own.
+    if (item.Type == jellyfin::mediaTypeFolder) this->btnMarkPlay->setVisibility(brls::Visibility::GONE);
 
-    if (item.Type == jellyfin::mediaTypeMovie || item.Type == jellyfin::mediaTypeEpisode ||
-        item.Type == jellyfin::mediaTypeVideo) {
-        auto& dm = DownloadManager::instance();
-        this->updateDownloadButton();
-        this->btnDownload->registerClickAction([this](brls::View* view) {
-            auto& dm = DownloadManager::instance();
-            switch (dm.findItem(this->itemId)) {
-            case DownloadStatus::Queued:
-            case DownloadStatus::Downloading:
-                Dialog::cancelable("main/download/confirm_cancel"_i18n, [this]() {
-                    DownloadManager::instance().cancelDownload(this->itemId);
-                    this->updateDownloadButton();
-                });
-                break;
-            case DownloadStatus::Completed:
-                brls::Application::notify("main/download/completed"_i18n);
-                break;
-            default:
-                int qi = AppConfig::instance().getValueIndex(AppConfig::DOWNLOAD_QUALITY);
-                dm.addDownload(this->itemId, static_cast<DownloadQuality>(qi));
-                this->updateDownloadButton();
-            }
-            return true;
-        });
-        this->btnDownload->addGestureRecognizer(new brls::TapGestureRecognizer(this->btnDownload));
-        this->statusSub = dm.getStatusEvent()->subscribe([this](const std::string& id, DownloadStatus status) {
-            if (id == this->itemId) this->updateDownloadButton();
-        });
-        this->progressSub =
-            dm.getProgressEvent()->subscribe([this](const std::string& id, int64_t downloaded, int64_t total) {
-                if (id != this->itemId || total <= 0) return;
-                this->btnDownload->setTitle(
-                    fmt::format("{} ({:.0f}%)", "main/download/downloading"_i18n, downloaded * 100.0 / total));
-            });
-    } else {
-        this->btnDownload->setVisibility(brls::Visibility::GONE);
-    }
+    // Downloads use Jellyfin endpoints and are not available for Feiniu.
+    this->btnDownload->setVisibility(brls::Visibility::GONE);
 }
 
-ContextMenu::~ContextMenu() {
-    if (this->btnDownload->getVisibility() == brls::Visibility::VISIBLE) {
-        auto& dm = DownloadManager::instance();
-        dm.getProgressEvent()->unsubscribe(this->progressSub);
-        dm.getStatusEvent()->unsubscribe(this->statusSub);
-    }
-}
+ContextMenu::~ContextMenu() {}
 
 bool ContextMenu::doPlayed() {
-    ASYNC_RETAIN
-    jellyfin::postJSON(
-        {
-            {"itemId", this->itemId},
-            {"played", this->isPlayed},
-        },
-        [ASYNC_TOKEN](const jellyfin::UserDataResult& r) {
-            ASYNC_RELEASE
-            this->updatePlayedButton(r.Played);
-        },
-        [ASYNC_TOKEN](const std::string& ex) {
-            ASYNC_RELEASE
-            brls::Application::popActivity(brls::TransitionAnimation::NONE, [ex]() { brls::Application::notify(ex); });
-        },
-        jellyfin::apiPlayedItems, AppConfig::instance().getUserId(), this->itemId);
-
-    return true;
-}
-
-bool ContextMenu::doFavorite() {
-    ASYNC_RETAIN
-    jellyfin::postJSON(
-        {
-            {"itemId", this->itemId},
-            {"isFavorite", this->isFavorite},
-        },
-        [ASYNC_TOKEN](const jellyfin::UserDataResult& r) {
-            ASYNC_RELEASE
-            this->updateFavoriteButton(r.IsFavorite);
-        },
-        [ASYNC_TOKEN](const std::string& ex) {
-            ASYNC_RELEASE
-            brls::Application::popActivity(brls::TransitionAnimation::NONE, [ex]() { brls::Application::notify(ex); });
-        },
-        jellyfin::apiFavoriteItems, AppConfig::instance().getUserId(), this->itemId);
-
+    this->setPlayed(true);
     return true;
 }
 
 bool ContextMenu::unPlayed() {
-    ASYNC_RETAIN
-    jellyfin::deleteJSON<jellyfin::UserDataResult>(
-        [ASYNC_TOKEN](const jellyfin::UserDataResult& r) {
-            ASYNC_RELEASE
-            this->updatePlayedButton(r.Played);
-        },
-        [ASYNC_TOKEN](const std::string& ex) {
-            ASYNC_RELEASE
-            brls::Application::popActivity(brls::TransitionAnimation::NONE, [ex]() { brls::Application::notify(ex); });
-        },
-        jellyfin::apiPlayedItems, AppConfig::instance().getUserId(), this->itemId);
-
+    this->setPlayed(false);
     return true;
 }
 
-bool ContextMenu::unFavorite() {
+void ContextMenu::setPlayed(bool played) {
+    const auto target = this->item;
     ASYNC_RETAIN
-    jellyfin::deleteJSON<jellyfin::UserDataResult>(
-        [ASYNC_TOKEN](const jellyfin::UserDataResult& r) {
+    fntv::async<bool>(
+        [target, played] {
+            bool synced = true;
+            try {
+                fntv::setWatched(target.Id, played);
+            } catch (const fntv::ApiError& ex) {
+                // Offline or logged out: nothing was changed, report it.
+                if (ex.kind == fntv::ErrorKind::Network || ex.kind == fntv::ErrorKind::Auth) throw;
+                // This NAS version has no watched endpoint: keep the mark on this Switch.
+                synced = false;
+            }
+            fntv::markLocalWatched(target, played);
+            return synced;
+        },
+        [ASYNC_TOKEN, played](bool synced) {
             ASYNC_RELEASE
-            this->updateFavoriteButton(r.IsFavorite);
+            this->item.UserData.Played = played;
+            this->updatePlayedButton(played, true);
+            if (!synced) brls::Application::notify("已在本机标记，当前 NAS 版本不支持同步观看状态");
         },
         [ASYNC_TOKEN](const std::string& ex) {
             ASYNC_RELEASE
-            brls::Application::popActivity(brls::TransitionAnimation::NONE, [ex]() { brls::Application::notify(ex); });
-        },
-        jellyfin::apiFavoriteItems, AppConfig::instance().getUserId(), this->itemId);
+            brls::Application::notify(ex);
+        });
+}
 
+bool ContextMenu::doFavorite() {
+    const auto id = this->itemId;
+    const bool favorite = !this->isFavorite;
+    ASYNC_RETAIN
+    fntv::async<bool>(
+        [id, favorite] { return fntv::setFavorite(id, favorite); },
+        [ASYNC_TOKEN](bool favorite) {
+            ASYNC_RELEASE
+            this->updateFavoriteButton(favorite, true);
+        },
+        [ASYNC_TOKEN](const std::string& ex) {
+            ASYNC_RELEASE
+            brls::Application::notify(ex);
+        });
     return true;
 }
 
-void ContextMenu::updatePlayedButton(bool played) {
-    this->cell->setWatched(played);
+bool ContextMenu::unFavorite() { return this->doFavorite(); }
+
+void ContextMenu::updatePlayedButton(bool played, bool applyToCell) {
+    // Only reflect real changes on the card: opening the menu must not hide a progress bar.
+    if (applyToCell && this->cell) this->cell->setWatched(played);
     this->isPlayed = played;
     if (played) {
         this->btnMarkPlay->setIcon("icon/ico-checkmark.svg");
@@ -215,8 +164,8 @@ void ContextMenu::updatePlayedButton(bool played) {
     }
 }
 
-void ContextMenu::updateFavoriteButton(bool favorite) {
-    this->cell->setFavorite(favorite);
+void ContextMenu::updateFavoriteButton(bool favorite, bool applyToCell) {
+    if (applyToCell && this->cell) this->cell->setFavorite(favorite);
     this->isFavorite = favorite;
     if (favorite) {
         this->btnFavorite->setIcon("icon/ico-heart.svg");

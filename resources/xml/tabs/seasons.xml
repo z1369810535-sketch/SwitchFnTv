@@ -1,10 +1,16 @@
 <brls:Box
     width="auto"
     height="auto"
+    axis="column"
     paddingLeft="@style/main/content_padding_sides"
     paddingRight="@style/main/content_padding_sides"
     paddingTop="@style/main/content_padding_top_bottom"
     paddingBottom="@style/main/content_padding_top_bottom">
+
+    <!-- show · season and episode count -->
+    <brls:Header
+        id="media/episodes/header"
+        marginBottom="10" />
 
     <RecyclingGrid
         grow="1"

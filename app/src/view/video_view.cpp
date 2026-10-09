@@ -650,6 +650,7 @@ void VideoView::registerMpvEvent() {
             this->volumeIcon->setImageFromSVGRes("icon/ico-volume.svg");
             break;
         case MpvEventEnum::MPV_FILE_ERROR: {
+            if (this->fileErrorHandler && this->fileErrorHandler()) break;
             auto dialog = new brls::Dialog("main/player/error"_i18n);
             dialog->addButton("hints/back"_i18n, []() { VideoView::close(true); });
             dialog->open();

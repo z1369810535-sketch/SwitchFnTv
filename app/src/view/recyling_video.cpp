@@ -82,9 +82,15 @@ void RecylingVideo::doRequest(bool refresh) {
                 this->hasMore = !r.Items.empty();
                 this->start = r.StartIndex + page;
                 if (r.StartIndex == 0) {
+                    if (r.Items.empty() && this->hideWhenEmpty) {
+                        this->recycler->setDataSource(new VideoDataSource(r.Items));
+                        this->hideRow();
+                        return;
+                    }
+                    this->setVisibility(brls::Visibility::VISIBLE);
                     this->recycler->setDataSource(new VideoDataSource(r.Items));
-                    this->title->setSubtitle(r.Items.empty() ? "暂无媒体" :
-                        (r.TotalRecordCount >= 0 ? std::to_string(r.TotalRecordCount) : ""));
+                    this->title->setSubtitle(r.Items.empty() ? "暂无内容" :
+                        (r.TotalRecordCount >= 0 ? "共 " + std::to_string(r.TotalRecordCount) + " 项" : ""));
                 } else if (!r.Items.empty()) {
                     auto dataSrc = dynamic_cast<VideoDataSource*>(this->recycler->getDataSource());
                     if (dataSrc) {
@@ -97,7 +103,7 @@ void RecylingVideo::doRequest(bool refresh) {
                 ASYNC_RELEASE
                 if (generation != this->requestGeneration) return;
                 this->loading = false;
-                this->title->setSubtitle(ex);
+                this->title->setSubtitle(ex + "（按 - 刷新）");
                 brls::Logger::warning("RecylingVideo {}", ex);
             });
         return;
@@ -131,6 +137,27 @@ void RecylingVideo::doRequest(bool refresh) {
             brls::Application::notify(ex);
         },
         this->queryCallback(this->start, this->pageSize));
+}
+
+void RecylingVideo::hideRow() {
+    // Move the focus out first: a cell inside a GONE row would keep an invisible focus.
+    bool hasFocus = false;
+    for (brls::View* v = brls::Application::getCurrentFocus(); v; v = v->getParent()) {
+        if (v == this) {
+            hasFocus = true;
+            break;
+        }
+        if (!v->hasParent()) break;
+    }
+    this->setVisibility(brls::Visibility::GONE);
+    if (!hasFocus || !this->hasParent()) return;
+    for (brls::View* sibling : this->getParent()->getChildren()) {
+        if (sibling == this || sibling->getVisibility() != brls::Visibility::VISIBLE) continue;
+        if (brls::View* focus = sibling->getDefaultFocus()) {
+            brls::Application::giveFocus(focus);
+            return;
+        }
+    }
 }
 
 void RecylingVideo::doLatest(bool refresh) {

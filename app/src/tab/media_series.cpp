@@ -197,51 +197,67 @@ void MediaSeries::doSpecial() {
 }
 
 void MediaSeries::doPlay() {
-    const auto id = this->seriesId;
-    ASYNC_RETAIN
-    fntv::async<jellyfin::Result<jellyfin::Episode>>(
-        [id] { return fntv::listSeriesEpisodes(id); },
-        [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
-            ASYNC_RELEASE
-            if (r.Items.empty()) {
-                brls::Application::notify("暂无可播放的剧集");
-                return;
-            }
-            const auto& item = r.Items[fntv::selectResumeEpisode(r.Items)];
-            PlayerView* view = new PlayerView(item);
-            view->setTitie(
-                fmt::format("S{}E{} - {}", item.ParentIndexNumber, item.IndexNumber, item.Name));
-            view->setSeries(this->seriesId);
-            brls::sync([view]() { brls::Application::giveFocus(view); });
-        },
-        [ASYNC_TOKEN](const std::string& ex) {
-            ASYNC_RELEASE
-            brls::Application::notify(ex);
-        });
+    // The episode list is already loaded by updateResume(): start at once instead of fetching
+    // every season again (and a second press can no longer open two players).
+    if (this->episodesReady) {
+        this->startPlay();
+        return;
+    }
+    this->playPending = true;
+    this->labelStatus->setText("正在读取剧集…");
+    if (!this->episodesLoading) this->updateResume();
+}
+
+void MediaSeries::startPlay() {
+    this->playPending = false;
+    if (this->episodes.empty()) {
+        brls::Application::notify("暂无可播放的剧集");
+        return;
+    }
+    const auto& item = this->episodes[fntv::selectResumeEpisode(this->episodes)];
+    PlayerView* view = new PlayerView(item);
+    view->setTitie(fntv::episodeTitle(item));
+    view->setSeries(this->seriesId, this->episodes);
+    brls::sync([view]() { brls::Application::giveFocus(view); });
 }
 
 void MediaSeries::updateResume() {
     const auto id = this->seriesId;
+    const auto generation = ++this->episodesGeneration;
+    this->episodesLoading = true;
     ASYNC_RETAIN
     fntv::async<jellyfin::Result<jellyfin::Episode>>(
         [id] { return fntv::listSeriesEpisodes(id); },
-        [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
+        [ASYNC_TOKEN, generation](const jellyfin::Result<jellyfin::Episode>& r) {
             ASYNC_RELEASE
+            if (generation != this->episodesGeneration) return;
+            this->episodesLoading = false;
+            this->episodes = r.Items;
+            this->episodesReady = true;
             if (r.Items.empty()) {
                 this->labelStatus->setText("暂无可播放剧集，按 Y 刷新");
                 this->btnPlay->setText("main/media/play"_i18n);
+                if (this->playPending) this->startPlay();
                 return;
             }
             auto item = r.Items[fntv::selectResumeEpisode(r.Items)];
             fntv::applyLocalProgress(item);
             const auto seconds = item.UserData.PlaybackPositionTicks / jellyfin::PLAYTICKS;
-            this->btnPlay->setText(fmt::format("{} S{}E{}", seconds > 0 ? "继续播放" : "播放", item.ParentIndexNumber, item.IndexNumber));
-            this->labelStatus->setText(fmt::format("共 {} 集 · S{}E{}{}", r.Items.size(), item.ParentIndexNumber,
-                item.IndexNumber, seconds > 0 ? " · 上次看到 " + misc::sec2Time(seconds) : ""));
+            const std::string episode = fntv::episodeTitle(item, false);
+            this->btnPlay->setText(fmt::format("{} {}", seconds > 0 ? "继续播放" : "播放", episode));
+            this->labelStatus->setText(fmt::format("共 {} 集 · {}{}", r.Items.size(), episode,
+                seconds > 0 ? " · 上次看到 " + misc::sec2Time(seconds) : ""));
+            if (this->playPending) this->startPlay();
         },
-        [ASYNC_TOKEN](const std::string& ex) {
+        [ASYNC_TOKEN, generation](const std::string& ex) {
             ASYNC_RELEASE
-            this->labelStatus->setText("读取播放记录失败，按 Y 重试");
+            if (generation != this->episodesGeneration) return;
+            this->episodesLoading = false;
+            this->labelStatus->setText("读取剧集失败，按 Y 重试");
+            if (this->playPending) {
+                this->playPending = false;
+                brls::Application::notify(ex);
+            }
             brls::Logger::warning("series resume: {}", ex);
         });
 }

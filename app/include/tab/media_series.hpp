@@ -53,6 +53,7 @@ private:
     void doSpecial();
     /// plays the next unwatched episode
     void doPlay();
+    void startPlay();
     void updateResume();
     /// downloads the whole show (filtered allLeaves, confirmation dialog)
     void doDownloadSeries();
@@ -64,5 +65,11 @@ private:
 
     std::string seriesId;
     bool isFavorite = false;
+    // Episodes of every season, loaded once per refresh and reused by Play and the player.
+    std::vector<jellyfin::Episode> episodes;
+    size_t episodesGeneration = 0;
+    bool episodesReady = false;
+    bool episodesLoading = false;
+    bool playPending = false;
     DownloadManager::StatusEvent::Subscription statusSub;
 };

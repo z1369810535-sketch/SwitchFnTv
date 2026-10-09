@@ -24,7 +24,9 @@ PlayerView::PlayerView(const jellyfin::Item& item, const int64_t seekTicks, cons
     view->setId("video");
     this->setDimensions(width, height);
     this->addView(view);
-    view->registerVideoQuality([this](...) { return this->toggleQuality(); });
+    // Feiniu streams are played directly: the Jellyfin bitrate menu only restarted playback.
+    view->hideVideoQuality();
+    view->setFileErrorHandler([this]() { return this->tryFallback(); });
 
     auto& mpv = MPVCore::instance();
 
@@ -128,28 +130,36 @@ PlayerView::~PlayerView() {
     brls::Logger::debug("trying delete PlayerView...");
 }
 
-void PlayerView::setSeries(const std::string& seriesId) {
+void PlayerView::setSeries(const std::string& seriesId, const std::vector<jellyfin::Episode>& preloaded) {
     this->seriesId = seriesId;
     activeSession.item.SeriesId = seriesId;
+    if (!preloaded.empty()) {
+        this->applyEpisodes(preloaded);
+        return;
+    }
     ASYNC_RETAIN
     fntv::async<jellyfin::Result<jellyfin::Episode>>(
         [seriesId] { return fntv::listSeriesEpisodes(seriesId); },
         [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
             ASYNC_RELEASE
-            int index = -1;
-            std::vector<std::string> values;
-            for (size_t i = 0; i < r.Items.size(); i++) {
-                auto& item = r.Items.at(i);
-                if (item.Id == this->itemId) index = static_cast<int>(i);
-                values.push_back(fmt::format("S{}E{} - {}", item.ParentIndexNumber, item.IndexNumber, item.Name));
-            }
-            view->setList(values, index);
-            this->episodes = std::move(r.Items);
+            this->applyEpisodes(r.Items);
         },
         [ASYNC_TOKEN](const std::string& error) {
             ASYNC_RELEASE
             brls::Logger::warning("setSeries {}", error);
         });
+}
+
+void PlayerView::applyEpisodes(std::vector<jellyfin::Episode> items) {
+    int index = -1;
+    std::vector<std::string> values;
+    for (size_t i = 0; i < items.size(); i++) {
+        auto& item = items.at(i);
+        if (item.Id == this->itemId) index = static_cast<int>(i);
+        values.push_back(fntv::episodeTitle(item));
+    }
+    view->setList(values, index);
+    this->episodes = std::move(items);
 }
 
 void PlayerView::setTitie(const std::string& title) { this->view->setTitie(title); }
@@ -170,7 +180,7 @@ bool PlayerView::playIndex(int index) {
     this->sourceId = item.Id;
     this->setChapters(item.Chapters, item.RunTimeTicks);
     this->playMedia(-1);
-    view->setTitie(fmt::format("S{}E{} - {}", item.ParentIndexNumber, item.IndexNumber, item.Name));
+    view->setTitie(fntv::episodeTitle(item));
     return true;
 }
 
@@ -181,13 +191,13 @@ void PlayerView::playMedia(const int64_t seekTicks) {
     const auto requestedId = itemId;
     activeSession = {};
     reachedStart = false;
+    usingFallback = false;
     ASYNC_RETAIN
     fntv::async<fntv::PlaySession>(
         [requestedId] { return fntv::preparePlay(requestedId); },
         [ASYNC_TOKEN, seekTicks, generation](const fntv::PlaySession& session) {
             ASYNC_RELEASE
             if (generation != requestGeneration) return;
-            auto& mpv = MPVCore::instance();
             activeSession = session;
             if (activeSession.item.Name.empty()) activeSession.item.Name = currentItem.Name;
             if (!seriesId.empty()) activeSession.item.SeriesId = seriesId;
@@ -198,29 +208,48 @@ void PlayerView::playMedia(const int64_t seekTicks) {
             this->playMethod = jellyfin::methodDirectPlay;
             this->playSessionId = session.media_guid;
 
-            std::stringstream ssextra;
-            ssextra << fmt::format("network-timeout={}", HTTP::TIMEOUT / 100);
-            if (startTicks > 0) ssextra << ",start=" << misc::sec2Time(startTicks / jellyfin::PLAYTICKS);
-            const std::string token = session.token;
-            std::string headers = "Authorization: " + token;
-            if (!session.cookie_header.empty()) headers += "\r\nCookie: " + session.cookie_header;
-            ssextra << ",http-header-fields=\"" << headers << "\"";
-            if (HTTP::PROXY_STATUS) ssextra << ",http-proxy=\"" << HTTP::PROXY << "\"";
-
             std::string url = session.direct_url;
-            if (url.empty()) url = session.fallback_url;
+            if (url.empty()) {
+                url = session.fallback_url;
+                usingFallback = true;
+            }
             if (url.empty()) {
                 Dialog::show("未返回可用的播放地址", []() { VideoView::close(); });
                 return;
             }
             this->stream.TranscodingUrl = session.fallback_url;
-            mpv.setUrl(url, ssextra.str());
+            this->startStream(url, requestedStart);
         },
         [ASYNC_TOKEN, generation](const std::string& ex) {
             ASYNC_RELEASE
             if (generation != requestGeneration) return;
             Dialog::show(ex, []() { VideoView::close(); });
         });
+}
+
+void PlayerView::startStream(const std::string& url, double startSeconds) {
+    std::stringstream ssextra;
+    ssextra << fmt::format("network-timeout={}", HTTP::TIMEOUT / 100);
+    if (startSeconds > 0) ssextra << ",start=" << misc::sec2Time(static_cast<int64_t>(startSeconds));
+    std::string headers = "Authorization: " + activeSession.token;
+    if (!activeSession.cookie_header.empty()) headers += "\r\nCookie: " + activeSession.cookie_header;
+    ssextra << ",http-header-fields=\"" << headers << "\"";
+    if (HTTP::PROXY_STATUS) ssextra << ",http-proxy=\"" << HTTP::PROXY << "\"";
+    requestedStart = startSeconds;
+    MPVCore::instance().setUrl(url, ssextra.str());
+}
+
+bool PlayerView::tryFallback() {
+    if (usingFallback || activeSession.fallback_url.empty() || activeSession.fallback_url == activeSession.direct_url)
+        return false;
+    usingFallback = true;
+    // Keep the place: a mid-play failure resumes where it stopped, an open failure at the resume point.
+    const double position = std::max(MPVCore::instance().playback_time, requestedStart);
+    brls::Logger::warning("direct play failed, using fallback stream");
+    brls::Application::notify("直连播放失败，正在尝试飞牛备用播放地址…");
+    reachedStart = false;
+    this->startStream(activeSession.fallback_url, position);
+    return true;
 }
 
 void PlayerView::reportStart() { this->reportPlay(); }

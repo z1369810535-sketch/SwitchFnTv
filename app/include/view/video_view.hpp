@@ -60,6 +60,9 @@ public:
 
     void hideVideoProgressSlider();
     void hideVideoQuality();
+    /// Called when mpv fails to open the stream. Return true when the owner recovers
+    /// (e.g. switches to a fallback URL) so the error dialog is skipped.
+    void setFileErrorHandler(std::function<bool()> handler) { this->fileErrorHandler = std::move(handler); }
     void registerVideoQuality(brls::ActionListener action);
     void registerActions(const std::string& hintText, const brls::ControllerButton button,
         const brls::BrlsKeyCombination key, const brls::ActionListener& actionListener, bool hidden = false,
@@ -70,6 +73,8 @@ public:
     static bool close(bool quit = false);
 
 private:
+    std::function<bool()> fileErrorHandler;
+
     /// OSD
     BRLS_BIND(brls::Label, titleLabel, "video/osd/title");
     BRLS_BIND(brls::Box, btnForward, "video/osd/forward");

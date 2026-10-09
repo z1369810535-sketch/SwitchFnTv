@@ -25,7 +25,7 @@ private:
 
 class ContextMenu : public brls::Box {
 public:
-    ContextMenu(const jellyfin::Item& item, BaseCardCell* view = nullptr);
+    ContextMenu(const jellyfin::Episode& item, BaseCardCell* view = nullptr);
     ~ContextMenu() override;
 
     bool isTranslucent() override { return true; }
@@ -43,14 +43,16 @@ private:
 
     bool doPlayed();
     bool unPlayed();
-    void updatePlayedButton(bool played);
+    void updatePlayedButton(bool played, bool applyToCell = false);
 
     bool doFavorite();
     bool unFavorite();
-    void updateFavoriteButton(bool favorite);
+    void updateFavoriteButton(bool favorite, bool applyToCell = false);
 
     void updateDownloadButton();
+    void setPlayed(bool played);
 
+    jellyfin::Episode item;
     std::string itemId;
     bool isPlayed = false;
     bool isFavorite = false;

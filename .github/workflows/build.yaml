@@ -13,6 +13,7 @@ jobs:
     - name: Test Feiniu catalog compatibility
       run: |
         python3 tests/detail_bindings_test.py
+        python3 tests/ui_resources_test.py
         mkdir -p build-tests
         g++ -std=c++17 -pthread -Itests/stubs -Iapp/include \
           -Ilibrary/borealis/library/include/borealis/extern \
@@ -22,6 +23,10 @@ jobs:
           -Ilibrary/borealis/library/include/borealis/extern \
           tests/fntv_playback_test.cpp app/src/api/fntv.cpp app/src/utils/playback_history.cpp -o build-tests/fntv_playback_test
         ./build-tests/fntv_playback_test
+        g++ -std=c++17 -pthread -Itests/stubs -Iapp/include \
+          -Ilibrary/borealis/library/include/borealis/extern \
+          tests/fntv_compat_test.cpp app/src/api/fntv.cpp app/src/utils/playback_history.cpp -o build-tests/fntv_compat_test
+        ./build-tests/fntv_compat_test
 
   build-nx:
     needs: test-catalog

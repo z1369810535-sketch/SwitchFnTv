@@ -20,8 +20,14 @@ ServerLogin::ServerLogin(const std::string& name, const std::string& url, const 
 
     this->btnSignin->registerClickAction([this](...) { return this->onSignin(); });
     this->btnQuickConnect->setVisibility(brls::Visibility::GONE);
-    this->labelDisclaimer->setText("Password is not saved. Session token is stored on the SD card and is not secure.");
+    this->labelDisclaimer->setText("密码不会保存；登录凭证以明文保存在 SD 卡上");
     this->labelDisclaimer->setVisibility(brls::Visibility::VISIBLE);
+}
+
+brls::View* ServerLogin::getDefaultFocus() {
+    // Returning from an expired session: the user name is known, go straight to the password.
+    if (!this->inputUser->getValue().empty()) return this->inputPass;
+    return brls::Box::getDefaultFocus();
 }
 
 ServerLogin::~ServerLogin() { brls::Logger::debug("ServerLogin Activity: delete"); }
@@ -30,7 +36,7 @@ bool ServerLogin::onSignin() {
     std::string username = inputUser->getValue();
     std::string password = inputPass->getValue();
     if (username.empty()) {
-        Dialog::show("Username is empty");
+        Dialog::show("请输入用户名");
         return false;
     }
 

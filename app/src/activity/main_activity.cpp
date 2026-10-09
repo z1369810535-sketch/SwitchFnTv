@@ -1,6 +1,5 @@
 #include "activity/main_activity.hpp"
 #include "utils/config.hpp"
-#include "api/http.hpp"
 
 MainActivity::MainActivity() {
     brls::Logger::debug("MainActivity: create");
@@ -8,11 +7,8 @@ MainActivity::MainActivity() {
     auto& conf = AppConfig::instance();
     conf.checkDanmuku();
 
-    std::string query = HTTP::encode_form({
-        {"api_key", conf.getToken()},
-        {"deviceId", conf.getDeviceId()},
-    });
-
-    std::string url = fmt::format("{}/socket?{}", "ws" + conf.getUrl().substr(4), query);
-    this->ws = std::make_unique<websocket>(url);
+    // The Jellyfin remote-control websocket (/socket?api_key=...) does not exist on Feiniu.
+    // Opening it put the session token into a URL, reconnected forever with a growing
+    // back-off, and its destructor joined a thread that could be sleeping for minutes
+    // (UI freeze on logout or server switch). It stays disabled for this client.
 }

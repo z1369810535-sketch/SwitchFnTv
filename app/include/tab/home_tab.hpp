@@ -25,5 +25,8 @@ private:
     BRLS_BIND(RecylingVideo, userResume, "home/user/resume");
     BRLS_BIND(RecylingVideo, showNextup, "home/show/nextup");
 
+    void loadLibraries();
+
     std::vector<RecylingVideo*> latest;
+    bool librariesLoading = false;
 };

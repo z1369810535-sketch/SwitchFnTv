@@ -64,20 +64,11 @@ public:
         auto& item = this->list.at(index);
         brls::View* view = nullptr;
 
-        if (item.CollectionType == "tvshows" || item.CollectionType == "movies")
-            view = new MediaCollection(item.Id);
-        else if (item.CollectionType == "music")
-            view = new MediaCollection(item.Id, jellyfin::mediaTypeMusicAlbum);
-        else if (item.CollectionType == "books")
-            view = new MediaCollection(item.Id, jellyfin::mediaTypeBook);
-        else if (item.CollectionType == "playlists")
-            view = new MediaCollection(item.Id, jellyfin::mediaTypePlaylist);
-        else if (item.CollectionType == "boxsets")
-            view = new MediaCollection(item.Id, jellyfin::mediaTypeBoxSet);
-        else if (item.CollectionType == "livetv")
+        // Every Feiniu library is browsed through item/list (movies, TV, mixed, folders).
+        if (item.CollectionType == "livetv")
             view = new LiveTV(item.Id);
         else
-            view = new MediaCollection(item.Id);
+            view = new MediaCollection(item.Id, "", "", item.Name);
 
         recycler->present(view);
     }

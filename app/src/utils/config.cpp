@@ -518,20 +518,30 @@ void AppConfig::save() {
 }
 
 bool AppConfig::checkLogin() {
+    this->loginError.clear();
     auto is_user = [this](const AppUser& u) { return u.id == this->user_id; };
     this->user = std::find_if(this->users.begin(), this->users.end(), is_user);
     if (this->user == this->users.end()) return false;
 
     auto is_server = [this](const AppServer& s) { return s.id == this->user->server_id; };
     auto it = std::find_if(this->servers.begin(), this->servers.end(), is_server);
-    if (it == this->servers.end()) return false;
+    if (it == this->servers.end() || it->urls.empty()) return false;
 
     this->server_url = it->urls.front();
     try {
-        fntv::userInfo();
+        // Short probe while the loading screen blocks input: an asleep or unreachable NAS
+        // used to hold it for 45 s or more (3 tries x 15 s). Two 6 s tries still give a NAS
+        // that is waking its disks time to answer.
+        fntv::userInfo(this->server_url, this->user->access_token, 6000, 2);
         return true;
+    } catch (const fntv::ApiError& ex) {
+        brls::Logger::warning("AppConfig {} checkLogin: {}", this->server_url, ex.raw.empty() ? ex.what() : ex.raw);
+        this->loginError =
+            ex.kind == fntv::ErrorKind::Auth ? std::string("登录已过期，请选择账号重新登录") : std::string(ex.what());
+        return false;
     } catch (const std::exception& ex) {
         brls::Logger::warning("AppConfig {} checkLogin: {}", this->server_url, ex.what());
+        this->loginError = ex.what();
         return false;
     }
 }

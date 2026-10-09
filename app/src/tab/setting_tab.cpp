@@ -25,6 +25,7 @@
 #include "view/selector_cell.hpp"
 #include "api/analytics.hpp"
 #include "api/jellyfin.hpp"
+#include "api/fntv.hpp"
 #include "utils/dialog.hpp"
 #ifdef __SWITCH__
 #include "utils/overclock.hpp"
@@ -117,16 +118,17 @@ void SettingTab::onCreate() {
         btnUser->setDetailText(conf.getUserName());
         btnUser->registerClickAction([](...) {
             Dialog::cancelable("main/setting/others/logout"_i18n, []() {
-                brls::async([]() {
-                    auto& c = AppConfig::instance();
-                    HTTP::Header header = {c.getAuth(c.getToken())};
-                    try {
-                        HTTP::post(c.getUrl() + jellyfin::apiLogout, "", header, HTTP::Timeout{});
-                        c.removeUser(c.getUserId());
-                    } catch (const std::exception& ex) {
-                        brls::Logger::warning("Logout failed: {}", ex.what());
-                    }
-                    brls::sync([]() { brls::Application::quit(); });
+                auto& c = AppConfig::instance();
+                const std::string url = c.getUrl();
+                const std::string token = c.getToken();
+                // Forget the session locally first. The old code only removed it after a
+                // successful Jellyfin logout call, which never succeeds on Feiniu, so the
+                // account stayed logged in after "logout".
+                c.removeUser(c.getUserId());
+                brls::async([url, token]() { fntv::logout(url, token); });
+                brls::sync([]() {
+                    brls::Application::clear();
+                    brls::Application::pushActivity(new ServerList(), brls::TransitionAnimation::NONE);
                 });
             });
             return true;

@@ -13,6 +13,7 @@
 #include "view/video_source.hpp"
 #include "view/context_menu.hpp"
 #include "view/ebook_view.hpp"
+#include "view/presenter.hpp"
 #include "api/jellyfin.hpp"
 #include "api/fntv.hpp"
 #include <unordered_set>
@@ -51,12 +52,8 @@ public:
 
         fntv::loadPoster(cell->picture, item);
 
-        if (item.IndexNumber > 0) {
-            cell->labelName->setText(fmt::format("{}. {}", item.IndexNumber, item.Name));
-        } else {
-            cell->labelName->setText(item.Name);
-        }
-        cell->labelOverview->setText(item.Overview);
+        cell->labelName->setText(fntv::episodeTitle(item));
+        cell->labelOverview->setText(item.Overview.empty() ? "暂无简介" : item.Overview);
 
         if (item.UserData.IsFavorite) {
             cell->badgeFavorite->setVisibility(brls::Visibility::VISIBLE);
@@ -67,6 +64,7 @@ public:
         if (item.UserData.Played) {
             cell->badgeTopRight->setImageFromSVGRes("icon/ico-checkmark.svg");
             cell->badgeTopRight->setVisibility(brls::Visibility::VISIBLE);
+            cell->rectProgress->getParent()->setVisibility(brls::Visibility::GONE);
         } else if (item.UserData.PlaybackPositionTicks) {
             cell->rectProgress->setWidthPercentage(item.UserData.PlayedPercentage);
             cell->rectProgress->getParent()->setVisibility(brls::Visibility::VISIBLE);
@@ -82,7 +80,7 @@ public:
     void onItemSelected(brls::Box* recycler, size_t index) override {
         auto& item = this->list.at(index);
         PlayerView* view = new PlayerView(item);
-        view->setTitie(fmt::format("S{}E{} - {}", item.ParentIndexNumber, item.IndexNumber, item.Name));
+        view->setTitie(fntv::episodeTitle(item));
         if (item.SeriesId.is_string()) view->setSeries(item.SeriesId.get<std::string>());
         brls::sync([view]() { brls::Application::giveFocus(view); });
     }
@@ -101,11 +99,19 @@ private:
     MediaList list;
 };
 
-class MediaSeason : public brls::Box {
+// Presenter: refreshed when the player closes, so watched marks and the resume focus follow playback.
+class MediaSeason : public brls::Box, public Presenter {
 public:
-    MediaSeason(const jellyfin::Season& item) : seasonId(item.Id) {
+    MediaSeason(const jellyfin::Episode& item) : seasonId(item.Id) {
         if (item.SeriesId.is_string()) this->seriesId = item.SeriesId.get<std::string>();
         this->inflateFromXMLRes("xml/tabs/seasons.xml");
+        // Which show / season this list belongs to: the page used to be a bare grid.
+        this->header->setTitle(item.SeriesName.empty() ? item.Name : item.SeriesName + " · " + item.Name);
+        this->header->setSubtitle("hints/loading"_i18n);
+        this->registerAction("hints/refresh"_i18n, brls::BUTTON_BACK, [this](...) {
+            this->doRequest();
+            return true;
+        });
 
         this->recycler->registerCell("Cell", []() {
             auto cell = new EpisodeCardCell();
@@ -126,29 +132,43 @@ public:
         this->doRequest();
     }
 
-    void doRequest() {
+    void doRequest() override {
+        // Copy the ids: the worker thread must not read members of a page that may be closed.
+        const std::string seasonId = this->seasonId;
+        const std::string seriesId = this->seriesId;
         ASYNC_RETAIN
         fntv::async<jellyfin::Result<jellyfin::Episode>>(
-            [this] {
-                auto r = fntv::listEpisodes(this->seasonId);
-                if (!this->seriesId.empty()) {
-                    for (auto& episode : r.Items) episode.SeriesId = this->seriesId;
+            [seasonId, seriesId] {
+                auto r = fntv::listEpisodes(seasonId);
+                for (auto& episode : r.Items) {
+                    if (!seriesId.empty()) episode.SeriesId = seriesId;
+                    fntv::applyLocalProgress(episode);
                 }
                 return r;
             },
             [ASYNC_TOKEN](const jellyfin::Result<jellyfin::Episode>& r) {
                 ASYNC_RELEASE
+                this->header->setSubtitle(r.Items.empty() ? "暂无剧集" : "共 " + std::to_string(r.Items.size()) + " 集");
+                if (r.Items.empty()) {
+                    this->recycler->setEmpty("这一季还没有可播放的剧集");
+                    return;
+                }
+                // Start on the episode to continue (bounded: flow layout builds every cell up to it).
+                const size_t resume = fntv::selectResumeEpisode(r.Items);
+                this->recycler->setDefaultCellFocus(resume < 60 ? resume : 0);
                 this->recycler->setDataSource(new EpisodeDataSource(r.Items));
                 brls::sync([this] { brls::Application::giveFocus(this->recycler); });
             },
             [ASYNC_TOKEN](const std::string& ex) {
                 ASYNC_RELEASE
-                this->recycler->setError(ex);
+                this->header->setSubtitle("");
+                this->recycler->setError(ex + "\n按 - 键重试");
             });
     }
 
 private:
     BRLS_BIND(RecyclingGrid, recycler, "media/episodes");
+    BRLS_BIND(brls::Header, header, "media/episodes/header");
 
     std::string seriesId;
     std::string seasonId;
@@ -174,7 +194,7 @@ RecyclingGridItem* VideoDataSource::cellForRow(RecyclingView* recycler, size_t i
         } else {
             cell->labelTitle->setText(item.SeriesName);
         }
-        cell->labelExt->setText(fmt::format("S{}E{} - {}", item.ParentIndexNumber, item.IndexNumber, item.Name));
+        cell->labelExt->setText(fntv::episodeTitle(item));
 
         fntv::loadPoster(cell->picture, item);
     } else {
@@ -236,13 +256,13 @@ void VideoDataSource::onItemSelected(brls::Box* recycler, size_t index) {
         recycler->present(new MediaMovie(item));
     } else if (item.Type == jellyfin::mediaTypeFolder || item.Type == jellyfin::mediaTypeBoxSet ||
                item.Type == jellyfin::mediaTypePhotoAlbum) {
-        recycler->present(new MediaCollection(item.Id, jellyfin::mediaTypeFolder));
+        recycler->present(new MediaCollection(item.Id, jellyfin::mediaTypeFolder, "", item.Name));
     } else if (item.Type == jellyfin::mediaTypeMusicVideo || item.Type == jellyfin::mediaTypeVideo) {
         PlayerView* view = new PlayerView(item);
         view->setTitie(item.ProductionYear ? fmt::format("{} ({})", item.Name, item.ProductionYear) : item.Name);
     } else if (item.Type == jellyfin::mediaTypeEpisode) {
         PlayerView* view = new PlayerView(item);
-        view->setTitie(fmt::format("S{}E{} - {}", item.ParentIndexNumber, item.IndexNumber, item.Name));
+        view->setTitie(fntv::episodeTitle(item));
         if (item.SeriesId.is_string()) view->setSeries(item.SeriesId.get<std::string>());
     } else if (item.Type == jellyfin::mediaTypeMusicAlbum) {
         recycler->present(new MusicAlbum(item));
@@ -265,9 +285,10 @@ void VideoDataSource::onItemSelected(brls::Box* recycler, size_t index) {
         brls::Application::pushActivity(new brls::Activity(view));
 #endif
     } else {
-        auto dialog = new brls::Dialog(fmt::format("Unsupported media type: {}", item.Type));
-        dialog->addButton("hints/cancel"_i18n, []() {});
-        dialog->open();
+        // Unknown Feiniu types still have an item detail and play/info: open the generic detail
+        // page instead of an English "Unsupported media type" dialog.
+        brls::Logger::warning("open unknown media type {} as detail page", item.Type);
+        recycler->present(new MediaMovie(item));
     }
 }
 

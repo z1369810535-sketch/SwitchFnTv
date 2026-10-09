@@ -46,6 +46,7 @@
     "common": "Common",
     "speed": "Playback Speed",
     "quality": "Video Quality",
+    "setting": "Player settings",
     "chapter": "Chapter",
     "auto": "Auto",
     "toggle": "Play/Pause",
@@ -189,7 +190,7 @@
       "header": "Server",
       "detail": "Server Details",
       "connect_new": "New Server",
-      "connect_to": "Connect to a Jellyfin server",
+      "connect_to": "Connect to a Feiniu (fnOS) media server",
       "invalid": "URL must start with http:// or https://",
       "connect": "Connect",
       "delete": "Confirm to delete?",
@@ -313,7 +314,7 @@
         "keyboard": "Keyboard"
       },
       "config_dir": "Config directory",
-      "logout": "Logout of the current account \n(the application will quit)",
+      "logout": "Log out of the current account? The saved session on this device is removed.",
       "up2date": "App is up to date",
       "upgrade": "{} is available now! Ready to update?",
       "updating": "Updating in progress, cancel now?",
@@ -323,8 +324,8 @@
   "hints": {
     "hint1": "Select a game from home screen",
     "hint2": "Hold the  key and click  to enter hbmenu",
-    "hint3": "In the hbmenu, select Switchfin",
-    "hint4": "Optional: Using provided Switchfin NSP forwarder",
+    "hint3": "In the hbmenu, select SwitchFnTv",
+    "hint4": "Optional: Using provided SwitchFnTv NSP forwarder",
     "hint_nsp": "Click  to install NSP forwarder",
     "hint_confirm": "Installing NSP forwarder may result in a ban\nPlease confirm again",
     "hint_right": "The pictures are from the Internet, and the copyright belongs to Nintendo Co., Ltd"

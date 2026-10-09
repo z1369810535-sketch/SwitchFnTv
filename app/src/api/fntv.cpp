@@ -110,17 +110,33 @@ std::string genAuthx(const std::string& path, const std::string& body) {
     return "nonce=" + nonce + "&timestamp=" + ts + "&sign=" + md5Hex(signSrc);
 }
 
-std::string humanError(const std::string& msg, int code) {
-    if (msg.find("password") != std::string::npos || msg.find("user") != std::string::npos ||
-        msg.find("account") != std::string::npos || code == 401)
+std::string lowerCopy(std::string s) {
+    for (auto& c : s) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+bool containsAny(const std::string& lowered, std::initializer_list<const char*> needles) {
+    for (auto n : needles)
+        if (lowered.find(n) != std::string::npos) return true;
+    return false;
+}
+
+// Messages for a rejected login. Server text is kept when it is already readable.
+std::string loginMessage(const ApiError& ex) {
+    if (ex.kind == ErrorKind::Network) return ex.what();
+    // Keep the clock hint: a wrong Switch time breaks the request signature, not the password.
+    if (ex.code == 5000 && ex.raw == "invalid sign") return ex.what();
+    const auto raw = lowerCopy(ex.raw);
+    if (ex.raw.empty() || containsAny(raw, {"password", "passwd", "user", "account", "unauthorized", "credential"}) ||
+        ex.raw.find("密码") != std::string::npos || ex.raw.find("用户") != std::string::npos || ex.code == 401 ||
+        ex.code == 403)
         return "登录失败，请检查用户名和密码";
-    if (msg.find("timeout") != std::string::npos || msg.find("Timeout") != std::string::npos)
-        return "连接超时，请检查 NAS 地址和局域网";
-    if (msg.find("Could not resolve") != std::string::npos || msg.find("Couldn't connect") != std::string::npos ||
-        msg.find("Failed to connect") != std::string::npos)
-        return "无法连接服务器，请检查地址 " + currentBase("");
-    if (!msg.empty()) return msg;
-    return "飞牛接口错误 (" + std::to_string(code) + ")";
+    return "登录失败：" + ex.raw;
+}
+
+bool fallbackWorthwhile(const ApiError& ex) {
+    // A different endpoint cannot help when the NAS is unreachable or the session is invalid.
+    return ex.kind == ErrorKind::Server || ex.kind == ErrorKind::Format;
 }
 
 nlohmann::json asArray(const nlohmann::json& data, const char* key = "list") {
@@ -210,11 +226,9 @@ std::string firstImagePath(const nlohmann::json& j) {
     return "";
 }
 
-std::string posterOf(const nlohmann::json& j) {
-    auto p = firstImagePath(j);
-    if (!p.empty()) return p;
-    return jsonString(j, {"guid", "id"});
-}
+// Only real image paths: an item guid is not an image and only produces failed requests
+// that occupy the image threads while the grid scrolls.
+std::string posterOf(const nlohmann::json& j) { return firstImagePath(j); }
 
 std::string resolveImageRel(std::string path) {
     while (!path.empty() && (path.front() == ' ' || path.front() == '\t')) path.erase(path.begin());
@@ -313,10 +327,12 @@ std::vector<jellyfin::MediaPeople> fetchPeople(const std::string& itemGuid) {
     nlohmann::json data;
     try {
         data = requestJson("POST", std::string("/v/api/v1/person/list/") + itemGuid, nlohmann::json::object());
-    } catch (...) {
+    } catch (const ApiError& first) {
+        if (!fallbackWorthwhile(first)) throw;
         try {
             data = requestJson("GET", std::string("/v/api/v1/person/list/") + itemGuid);
-        } catch (...) {
+        } catch (const ApiError& second) {
+            if (!fallbackWorthwhile(second)) throw;
             data = requestJson("POST", "/v/api/v1/person/list", nlohmann::json{{"item_guid", itemGuid}});
         }
     }
@@ -356,7 +372,98 @@ std::string requestOnce(const std::string& method, const std::string& url, const
     return HTTP::post(url, body, header, timeout);
 }
 
+// One signed request with the shared retry policy:
+//  - "invalid sign" (nonce/timestamp race) is retried up to 5 times;
+//  - transient network failures are retried until `attempts` is used up;
+//  - business errors and HTTP 4xx are returned at once.
+std::string transact(const std::string& method, const std::string& path, const nlohmann::json& body,
+    const std::string& base, const std::string& token, long timeoutMs, int attempts, nlohmann::json& parsed) {
+    int signTries = 0;
+    int networkTries = 0;
+    for (;;) {
+        nlohmann::json payload = body;
+        if (method == "POST" || method == "PUT" || method == "post" || method == "put") {
+            if (payload.is_null() || !payload.is_object()) payload = nlohmann::json::object();
+            payload["nonce"] = randomNonce();
+        }
+        const std::string bodyStr = payload.is_null() ? std::string() : dumpBody(payload);
+        const auto header = signedHeaders(path, bodyStr, token);
+        std::string resp;
+        try {
+            resp = requestOnce(method, base + path, bodyStr, header, timeoutMs);
+        } catch (const std::exception& ex) {
+            ApiError error = transportError(ex.what(), base);
+            if (error.retryable && ++networkTries < std::max(1, attempts)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                continue;
+            }
+            throw error;
+        }
+        parsed = nlohmann::json::parse(resp, nullptr, false);
+        if (!parsed.is_discarded() && parsed.is_object()) {
+            const int code = jsonInt(parsed, "code", 0);
+            const std::string msg = jsonString(parsed, {"msg", "message"});
+            if (code == 5000 && msg == "invalid sign" && ++signTries < 5) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
+            if (parsed.contains("code") && code != 0) throw businessError(code, msg);
+        }
+        return resp;
+    }
+}
+
 }  // namespace
+
+ApiError transportError(const std::string& raw, const std::string& base) {
+    const auto s = lowerCopy(raw);
+    const auto statusAt = s.find("http status ");
+    if (statusAt != std::string::npos) {
+        const int status = std::atoi(s.c_str() + statusAt + 12);
+        if (status == 401 || status == 403)
+            return ApiError(ErrorKind::Auth, "登录状态已失效，请重新登录", status, raw);
+        if (status == 404)
+            return ApiError(ErrorKind::Server, "当前飞牛影视版本不支持该功能 (HTTP 404)", status, raw);
+        if (status >= 500)
+            return ApiError(ErrorKind::Network, "飞牛影视服务暂时不可用 (HTTP " + std::to_string(status) + ")，请稍后重试",
+                status, raw, true);
+        return ApiError(ErrorKind::Server, "服务器拒绝了请求 (HTTP " + std::to_string(status) + ")", status, raw);
+    }
+    if (containsAny(s, {"timeout", "timed out"}))
+        return ApiError(ErrorKind::Network, "连接 NAS 超时，请确认 NAS 已开机且与 Switch 在同一网络", 0, raw, true);
+    if (containsAny(s, {"resolve"}))
+        return ApiError(ErrorKind::Network, "无法解析服务器地址 " + base + "，建议直接填写 NAS 的 IP", 0, raw, true);
+    if (containsAny(s, {"couldn't connect", "could not connect", "failed to connect", "connection refused"}))
+        return ApiError(ErrorKind::Network, "无法连接 " + base + "，请检查地址、端口和 NAS 状态", 0, raw, true);
+    if (containsAny(s, {"ssl", "tls", "certificate"}))
+        return ApiError(ErrorKind::Network, "HTTPS 连接失败，可改用 http:// 地址重试", 0, raw, false);
+    if (containsAny(s, {"callback aborted", "aborted by"}))
+        return ApiError(ErrorKind::Network, "请求已取消", 0, raw, false);
+    return ApiError(ErrorKind::Network, raw.empty() ? "网络请求失败，请重试" : "网络请求失败：" + raw, 0, raw, true);
+}
+
+ApiError businessError(int code, const std::string& msg) {
+    const auto s = lowerCopy(msg);
+    if (code == 5000 && s == "invalid sign")
+        return ApiError(ErrorKind::Server, "请求签名校验失败，请检查 Switch 的系统时间和时区是否正确", code, msg);
+    if (containsAny(s, {"token", "unauthorized", "not login", "expired"}) || msg.find("未登录") != std::string::npos ||
+        msg.find("登录已过期") != std::string::npos || msg.find("登录失效") != std::string::npos)
+        return ApiError(ErrorKind::Auth, "登录状态已失效，请重新登录", code, msg);
+    if (msg.empty()) return ApiError(ErrorKind::Server, "飞牛接口错误 (" + std::to_string(code) + ")", code, msg);
+    return ApiError(ErrorKind::Server, msg, code, msg);
+}
+
+const std::vector<SortOption>& sortOptions() {
+    // create_time/sort_title are the columns used by the Feiniu web client. Others degrade to
+    // name order through listItems() when a server version rejects them.
+    static const std::vector<SortOption> options = {
+        {SORT_ADDED, "main/media/date_add"},
+        {SORT_NAME, "main/media/name"},
+        {"release_date", "main/media/premiere_date"},
+        {"vote_average", "main/media/rating"},
+    };
+    return options;
+}
 
 std::string md5Hex(const std::string& text) {
     uint32_t a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
@@ -437,75 +544,27 @@ HTTP::Header signedHeaders(const std::string& path, const std::string& body, con
 }
 
 std::string requestRaw(const std::string& method, const std::string& path, nlohmann::json body, const std::string& baseOverride,
-    const std::string& tokenOverride, long timeoutMs) {
+    const std::string& tokenOverride, long timeoutMs, int attempts) {
     const std::string base = currentBase(baseOverride);
     const std::string token = currentToken(tokenOverride);
-    std::string lastError = "飞牛接口请求失败";
-    for (int attempt = 0; attempt < 5; attempt++) {
-        nlohmann::json payload = body;
-        if (method == "POST" || method == "PUT" || method == "post" || method == "put") {
-            if (payload.is_null() || payload.empty()) payload = nlohmann::json::object();
-            payload["nonce"] = randomNonce();
-        }
-        const std::string bodyStr = payload.is_null() ? std::string() : dumpBody(payload);
-        const auto header = signedHeaders(path, bodyStr, token);
-        try {
-            const std::string resp = requestOnce(method, base + path, bodyStr, header, timeoutMs);
-            auto parsed = nlohmann::json::parse(resp, nullptr, false);
-            if (parsed.is_discarded()) return resp;
-            const int code = jsonInt(parsed, "code", 0);
-            const std::string msg = jsonString(parsed, {"msg", "message"});
-            if (code == 5000 && msg == "invalid sign") {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                continue;
-            }
-            if (parsed.contains("code") && code != 0) throw std::runtime_error(humanError(msg, code));
-            if (parsed.contains("data") && parsed["data"].is_string()) return parsed["data"].get<std::string>();
-            return resp;
-        } catch (const std::exception& ex) {
-            lastError = humanError(ex.what(), 0);
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-    }
-    throw std::runtime_error(lastError);
+    nlohmann::json parsed;
+    std::string resp = transact(method, path, body, base, token, timeoutMs, attempts, parsed);
+    if (!parsed.is_discarded() && parsed.is_object() && parsed.contains("data") && parsed["data"].is_string())
+        return parsed["data"].get<std::string>();
+    return resp;
 }
 
 nlohmann::json requestJson(const std::string& method, const std::string& path, nlohmann::json body, const std::string& baseOverride,
-    const std::string& tokenOverride, long timeoutMs) {
+    const std::string& tokenOverride, long timeoutMs, int attempts) {
     const std::string base = currentBase(baseOverride);
     const std::string token = currentToken(tokenOverride);
-    std::string lastError = "飞牛接口请求失败";
-    for (int attempt = 0; attempt < 5; attempt++) {
-        nlohmann::json payload = body;
-        if (method == "POST" || method == "PUT" || method == "post" || method == "put") {
-            if (payload.is_null() || !payload.is_object()) payload = nlohmann::json::object();
-            payload["nonce"] = randomNonce();
-        }
-        const std::string bodyStr = payload.is_null() ? std::string() : dumpBody(payload);
-        const auto header = signedHeaders(path, bodyStr, token);
-        try {
-            const std::string resp = requestOnce(method, base + path, bodyStr, header, timeoutMs);
-            auto parsed = nlohmann::json::parse(resp, nullptr, false);
-            if (parsed.is_discarded() || (!parsed.is_object() && !parsed.is_array()))
-                throw std::runtime_error("服务器返回了无法解析的数据");
-            if (parsed.is_array()) return parsed;
-            const int code = jsonInt(parsed, "code", 0);
-            std::string msg;
-            if (parsed.contains("msg") && parsed["msg"].is_string()) msg = parsed["msg"].get<std::string>();
-            if (code == 5000 && msg == "invalid sign") {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                continue;
-            }
-            if (parsed.contains("code") && code != 0) throw std::runtime_error(humanError(msg, code));
-            if (parsed.contains("data")) return parsed["data"];
-            return parsed;
-        } catch (const std::exception& ex) {
-            lastError = humanError(ex.what(), 0);
-            if (std::string(ex.what()).find("invalid sign") == std::string::npos && attempt >= 2) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-    }
-    throw std::runtime_error(lastError);
+    nlohmann::json parsed;
+    transact(method, path, body, base, token, timeoutMs, attempts, parsed);
+    if (parsed.is_discarded() || (!parsed.is_object() && !parsed.is_array()))
+        throw ApiError(ErrorKind::Format, "服务器返回了无法解析的数据，请确认地址指向飞牛影视（默认端口 5666）");
+    if (parsed.is_array()) return parsed;
+    if (parsed.contains("data")) return parsed["data"];
+    return parsed;
 }
 
 std::string mapType(const std::string& raw) {
@@ -516,6 +575,8 @@ std::string mapType(const std::string& raw) {
     if (t == "season") return jellyfin::mediaTypeSeason;
     if (t == "episode") return jellyfin::mediaTypeEpisode;
     if (t == "folder" || t == "directory" || t == "dir") return jellyfin::mediaTypeFolder;
+    // Collections/box sets are browsed like folders: their children come from item/list.
+    if (t == "collection" || t == "collections" || t == "boxset" || t == "set") return jellyfin::mediaTypeFolder;
     if (t == "video") return jellyfin::mediaTypeMovie;
     return raw.empty() ? jellyfin::mediaTypeMovie : raw;
 }
@@ -609,7 +670,14 @@ LoginResult login(const std::string& base, const std::string& username, const st
         {"username", username},
         {"password", password},
     };
-    auto data = requestJson("POST", "/v/api/v1/login", body, base, "");
+    nlohmann::json data;
+    try {
+        // One attempt for rejected credentials: repeating a wrong password counts against the NAS lockout.
+        data = requestJson("POST", "/v/api/v1/login", body, base, "", 15000, 2);
+    } catch (const ApiError& ex) {
+        if (ex.kind == ErrorKind::Network || ex.kind == ErrorKind::Format) throw;
+        throw ApiError(ErrorKind::Auth, loginMessage(ex), ex.code, ex.raw);
+    }
     LoginResult r;
     if (data.is_string()) {
         r.token = data.get<std::string>();
@@ -624,15 +692,19 @@ LoginResult login(const std::string& base, const std::string& username, const st
     r.server_id = md5Hex(normalizeBaseUrl(base));
     r.server_name = "飞牛影视";
     try {
-        auto cfg = sysConfig(base);
-        auto name = jsonString(cfg, {"name", "server_name", "title"});
-        if (!name.empty()) r.server_name = name;
+        r.server_name = serverName(sysConfig(base, 5000, 1), r.server_name);
     } catch (...) {
     }
     return r;
 }
 
-nlohmann::json sysConfig(const std::string& base) { return requestJson("GET", "/v/api/v1/sys/config", nullptr, base, ""); }
+nlohmann::json sysConfig(const std::string& base, long timeoutMs, int attempts) {
+    return requestJson("GET", "/v/api/v1/sys/config", nullptr, base, "", timeoutMs, attempts);
+}
+
+std::string serverName(const nlohmann::json& cfg, const std::string& fallback) {
+    return jsonString(cfg, {"server_name", "name", "title"}, fallback);
+}
 
 SysConfigInfo inspectSysConfig(const nlohmann::json& cfg) {
     SysConfigInfo info;
@@ -643,18 +715,30 @@ SysConfigInfo inspectSysConfig(const nlohmann::json& cfg) {
     return info;
 }
 
-nlohmann::json userInfo() { return requestJson("GET", "/v/api/v1/user/info"); }
+nlohmann::json userInfo(const std::string& base, const std::string& token, long timeoutMs, int attempts) {
+    return requestJson("GET", "/v/api/v1/user/info", nullptr, base, token, timeoutMs, attempts);
+}
+
+void logout(const std::string& base, const std::string& token) {
+    if (token.empty()) return;
+    try {
+        requestJson("POST", "/v/api/v1/user/logout", nlohmann::json::object(), base, token, 3000, 1);
+    } catch (const std::exception& ex) {
+        // Older servers have no logout endpoint; the local token is removed regardless.
+        brls::Logger::warning("logout: {}", ex.what());
+    }
+}
 
 std::vector<jellyfin::Collection> listLibraries() {
     nlohmann::json data;
     try {
         data = requestJson("GET", "/v/api/v1/mediadb/list");
-    } catch (const std::exception& primary) {
-        const std::string error = primary.what();
+    } catch (const ApiError& primary) {
+        if (!fallbackWorthwhile(primary)) throw;
         try {
             data = requestJson("GET", "/v/api/v1/mdb/list");
         } catch (...) {
-            throw std::runtime_error(error);
+            throw primary;
         }
     }
     std::vector<jellyfin::Collection> out;
@@ -672,15 +756,18 @@ std::vector<jellyfin::Collection> listLibraries() {
     return out;
 }
 
-jellyfin::Result<jellyfin::Episode> listItems(const std::string& parentGuid, size_t start, size_t pageSize, const std::string& itemType) {
+jellyfin::Result<jellyfin::Episode> listItems(const std::string& parentGuid, size_t start, size_t pageSize,
+    const std::string& itemType, const std::string& sortColumn, const std::string& sortType) {
     const int page = static_cast<int>(pageSize ? start / pageSize + 1 : 1);
     const int size = static_cast<int>(pageSize ? pageSize : 50);
     const bool drillDown = itemType == jellyfin::mediaTypeSeason || itemType == jellyfin::mediaTypeEpisode ||
                            itemType == jellyfin::mediaTypeFolder;
+    const std::string column = sortColumn.empty() ? SORT_NAME : sortColumn;
+    std::string direction = lowerCopy(sortType) == "desc" ? "DESC" : "ASC";
 
     nlohmann::json req = {
-        {"sort_column", "sort_title"},
-        {"sort_type", "ASC"},
+        {"sort_column", column},
+        {"sort_type", direction},
         {"page", page},
         {"page_size", size},
     };
@@ -696,7 +783,17 @@ jellyfin::Result<jellyfin::Episode> listItems(const std::string& parentGuid, siz
         req["tags"] = nlohmann::json{{"type", types}};
     }
 
-    auto data = requestJson("POST", "/v/api/v1/item/list", req);
+    nlohmann::json data;
+    try {
+        data = requestJson("POST", "/v/api/v1/item/list", req);
+    } catch (const ApiError& ex) {
+        // Sort columns differ between server versions: keep browsing in name order rather than failing.
+        if (ex.kind != ErrorKind::Server || column == SORT_NAME) throw;
+        brls::Logger::warning("item/list sort {} rejected: {}", column, ex.raw);
+        req["sort_column"] = SORT_NAME;
+        req["sort_type"] = "ASC";
+        data = requestJson("POST", "/v/api/v1/item/list", req);
+    }
     // An empty page is the end of this query. Switching to parent_guid here mixes
     // directory entries into an existing result and can repeat the first page.
     auto arr = listArray(data);
@@ -718,6 +815,11 @@ jellyfin::Detail getDetail(const std::string& guid) {
         if (data.is_object() && data.contains("item") && data["item"].is_object()) d = mapDetail(data["item"]);
         else d = mapDetail(data);
         if (d.Id.empty() || d.Name.empty()) throw std::runtime_error("详情数据不完整");
+    } catch (const ApiError& ex) {
+        if (!fallbackWorthwhile(ex)) throw;
+        auto info = requestJson("POST", "/v/api/v1/play/info", nlohmann::json{{"item_guid", guid}});
+        if (info.contains("item") && info["item"].is_object()) d = mapDetail(info["item"]);
+        else d = mapDetail(info);
     } catch (...) {
         auto info = requestJson("POST", "/v/api/v1/play/info", nlohmann::json{{"item_guid", guid}});
         if (info.contains("item") && info["item"].is_object()) d = mapDetail(info["item"]);
@@ -776,12 +878,12 @@ nlohmann::json childList(const std::string& endpoint, const std::string& guid) {
     nlohmann::json data;
     try {
         data = requestJson("GET", endpoint + guid);
-    } catch (const std::exception& primary) {
-        const std::string error = primary.what();
+    } catch (const ApiError& primary) {
+        if (!fallbackWorthwhile(primary)) throw;
         try {
             return allChildren(guid);
         } catch (...) {
-            throw std::runtime_error(error);
+            throw primary;
         }
     }
     auto rows = listArray(data);
@@ -962,6 +1064,35 @@ bool setFavorite(const std::string& guid, bool favorite) {
     return favorite;
 }
 
+bool setWatched(const std::string& guid, bool watched) {
+    requestJson(watched ? "PUT" : "DELETE", "/v/api/v1/item/watched", {{"item_guid", guid}});
+    return watched;
+}
+
+void markLocalWatched(const jellyfin::Episode& item, bool watched) {
+    if (item.Id.empty()) return;
+    auto store = history(historyFile());
+    const double duration = item.RunTimeTicks > 0 ? static_cast<double>(item.RunTimeTicks / jellyfin::PLAYTICKS) : 0;
+    const auto revision = store->save(item, 0, duration, watched);
+    // The mark itself was the user's decision, not a pending upload.
+    if (revision) store->acknowledge(item.Id, revision);
+}
+
+std::string episodeTitle(const jellyfin::Episode& item, bool withName) {
+    const std::string& name = item.Name;
+    std::string prefix;
+    if (item.ParentIndexNumber > 0 && item.IndexNumber > 0) {
+        prefix = "S" + std::to_string(item.ParentIndexNumber) + "E" + std::to_string(item.IndexNumber);
+    } else if (item.IndexNumber > 0) {
+        // Untagged names such as "第 3 集" already carry the number.
+        if (!name.empty() && name.find("集") != std::string::npos) return name;
+        prefix = "第 " + std::to_string(item.IndexNumber) + " 集";
+    }
+    if (prefix.empty()) return name;
+    if (!withName || name.empty() || name == prefix) return prefix;
+    return prefix + " · " + name;
+}
+
 std::string subtitleCacheDir() { return AppConfig::instance().configDir() + "/subtitles"; }
 
 void cleanupSubtitles() {
@@ -1076,10 +1207,12 @@ PlaySession preparePlay(const std::string& itemGuid) {
         if (stream.contains("direct_link_qualities") && stream["direct_link_qualities"].is_array()) {
             for (auto& q : stream["direct_link_qualities"]) {
                 auto url = jsonString(q, {"url", "link"});
-                if (!url.empty()) {
-                    session.fallback_url = url;
-                    break;
-                }
+                if (url.empty()) continue;
+                // Some versions return a path relative to the web root.
+                if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0)
+                    url = base + (url.front() == '/' ? "" : "/") + url;
+                session.fallback_url = url;
+                break;
             }
         }
         if (stream.contains("header") && stream["header"].is_object()) {
@@ -1110,11 +1243,8 @@ void loadImagePath(brls::Image* view, const std::string& path) {
 
 void loadPoster(brls::Image* view, const jellyfin::Item& item) {
     auto it = item.ImageTags.find(jellyfin::imageTypePrimary);
-    if (it != item.ImageTags.end() && !it->second.empty()) {
-        loadImagePath(view, it->second);
-        return;
-    }
-    if (!item.Id.empty()) loadImagePath(view, item.Id);
+    // Without a real poster path the placeholder stays: the item guid is not an image.
+    if (it != item.ImageTags.end() && !it->second.empty()) loadImagePath(view, it->second);
 }
 
 }  // namespace fntv

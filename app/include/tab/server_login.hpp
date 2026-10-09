@@ -13,6 +13,8 @@ public:
 
     bool onSignin();
 
+    brls::View* getDefaultFocus() override;
+
 private:
     BRLS_BIND(brls::Header, hdrSigin, "server/sigin_to");
     BRLS_BIND(brls::InputCell, inputUser, "server/user");

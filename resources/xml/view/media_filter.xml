@@ -47,14 +47,17 @@
                         id="media/sort/order" />
                 </brls:Box>
 
+                <!-- item/list has no played/unplayed filter: hidden for Feiniu. -->
                 <brls:Header
                     width="auto"
                     height="auto"
+                    visibility="gone"
                     title="@i18n/main/media/filter" />
                 <brls:Box
                     width="100%"
                     height="auto"
                     axis="column"
+                    visibility="gone"
                     marginBottom="30px">
                     <brls:BooleanCell
                         id="media/filter/played" />

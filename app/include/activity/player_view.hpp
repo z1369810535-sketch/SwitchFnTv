@@ -17,7 +17,9 @@ public:
     PlayerView(const jellyfin::Item& item, const int64_t seekTicks = -1, const std::string& = "");
     ~PlayerView();
 
-    void setSeries(const std::string& seriesId);
+    /// Enables the episode list / previous / next. A list already loaded by the caller is
+    /// used as-is instead of fetching every season again.
+    void setSeries(const std::string& seriesId, const std::vector<jellyfin::Episode>& preloaded = {});
     void setTitie(const std::string& title);
 
 #ifdef ANDROID
@@ -43,6 +45,11 @@ private:
     void reportPlay(bool isPaused = false);
     void requestDanmaku();
     bool toggleQuality();
+    void applyEpisodes(std::vector<jellyfin::Episode> items);
+    /// Loads url into mpv with the session headers, starting at startSeconds.
+    void startStream(const std::string& url, double startSeconds);
+    /// Direct play failed: retry once with the server's fallback link.
+    bool tryFallback();
 
     // Playinfo
     std::string itemId;
@@ -52,6 +59,7 @@ private:
     uint64_t requestGeneration = 0;
     bool recordReady = false;
     bool reachedStart = false;
+    bool usingFallback = false;
     double requestedStart = 0;
     std::chrono::steady_clock::time_point lastReport{};
     std::string sourceId;
